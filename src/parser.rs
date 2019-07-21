@@ -4,7 +4,7 @@ use nom::{
     combinator::{map, map_res},
     error::VerboseError,
     multi::many0,
-    sequence::{delimited, preceded},
+    sequence::delimited,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,18 +31,14 @@ fn number(input: &str) -> IResult<Value> {
     map(map_res(digit1, str::parse), Value::Number)(input)
 }
 
-fn quoted_value(input: &str) -> IResult<Value> {
-    map(preceded(char('\''), value), |v| {
-        Value::SExpr(vec![Value::Identifier("quote"), v])
+fn string(input: &str) -> IResult<Value> {
+    map(delimited(char('"'), many0(none_of("\"")), char('"')), |s| {
+        Value::String(s.into_iter().collect())
     })(input)
 }
 
-fn string(input: &str) -> IResult<Value> {
-    map(delimited(char('"'), many0(none_of("\"")), char('"')), |s| Value::String(s.into_iter().collect()))(input)
-}
-
 fn value(input: &str) -> IResult<Value> {
-    alt((quoted_value, string, number, identifier, sexpr))(input)
+    alt((string, number, identifier, sexpr))(input)
 }
 
 fn sexpr(input: &str) -> IResult<Value> {
@@ -61,35 +57,33 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    macro_rules! proptest_combinator {
-        (|$var:ident in $strategy:literal| $block:block == $expected_result:expr) => {
-            proptest!(|($var in $strategy)| {
-                let (rest, result) = $block.unwrap();
-                prop_assert_eq!(rest, "");
-                prop_assert_eq!(result, $expected_result)
-            });
+    proptest! {
+        #[test]
+        fn test_identifier(s in "[a-zA-Z]+") {
+            if let Ok(("", Value::Identifier(s2))) = identifier(&s) {
+                prop_assert_eq!(s2, &s);
+            } else {
+                unreachable!()
+            }
         }
-    }
 
-    #[test]
-    fn test_identifier() {
-        proptest_combinator!(|s in "[a-zA-Z]+"| { identifier(&s) } == Value::Identifier(&s))
-    }
+        #[test]
+        fn test_number(ns in "[0-9]|[1-9][0-9]{0,10}") {
+            if let Ok(("", Value::Number(n))) = number(&ns) {
+                prop_assert_eq!(n.to_string(), ns);
+            } else {
+                unreachable!()
+            }
+        }
 
-    #[test]
-    fn test_number() {
-        proptest_combinator!(|s in "[0-9]|[1-9][0-9]{0,10}"| {
-            map(number, |v| if let Value::Number(n) = v { n.to_string() } else { unreachable!() } )(&s)
-        } == s.clone())
-    }
-
-    proptest!{
         #[test]
         fn test_string(s in "[^\"]*") {
-            let s2 = "\"".to_owned() + &s + "\"";
-            let (rest, value) = string(&s2).unwrap();
-            prop_assert_eq!(rest, "");
-            prop_assert_eq!(value, Value::String(s));
+            let wrapped_s = "\"".to_owned() + &s + "\"";
+            if let Ok(("", Value::String(s2))) = string(&wrapped_s) {
+                prop_assert_eq!(s2, s);
+            } else {
+                unreachable!()
+            }
         }
     }
 }
