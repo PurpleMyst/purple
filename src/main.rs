@@ -1,3 +1,5 @@
+mod parser;
+
 fn main() {
-    println!("Hello, world!");
+    println!("{:#?}", parser::parse("'(list 1 2 3)"));
 }
