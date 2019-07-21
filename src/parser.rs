@@ -1,16 +1,17 @@
 use nom::{
     branch::alt,
-    character::complete::{alpha1, char, digit1, multispace0},
+    character::complete::{alpha1, char, digit1, multispace0, none_of},
     combinator::{map, map_res},
     error::VerboseError,
     multi::many0,
     sequence::{delimited, preceded},
 };
 
-#[derive(PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Value<'a> {
     Number(f64),
     Identifier(&'a str),
+    String(String),
     SExpr(Vec<Value<'a>>),
 }
 
@@ -36,8 +37,12 @@ fn quoted_value(input: &str) -> IResult<Value> {
     })(input)
 }
 
+fn string(input: &str) -> IResult<Value> {
+    map(delimited(char('"'), many0(none_of("\"")), char('"')), |s| Value::String(s.into_iter().collect()))(input)
+}
+
 fn value(input: &str) -> IResult<Value> {
-    alt((quoted_value, number, identifier, sexpr))(input)
+    alt((quoted_value, string, number, identifier, sexpr))(input)
 }
 
 fn sexpr(input: &str) -> IResult<Value> {
@@ -67,14 +72,24 @@ mod tests {
     }
 
     #[test]
-    fn t_identifier() {
+    fn test_identifier() {
         proptest_combinator!(|s in "[a-zA-Z]+"| { identifier(&s) } == Value::Identifier(&s))
     }
 
     #[test]
-    fn t_number() {
-        proptest_combinator!(|s in "[0-9]|[1-9][0-9]{0,15}"| {
+    fn test_number() {
+        proptest_combinator!(|s in "[0-9]|[1-9][0-9]{0,10}"| {
             map(number, |v| if let Value::Number(n) = v { n.to_string() } else { unreachable!() } )(&s)
         } == s.clone())
+    }
+
+    proptest!{
+        #[test]
+        fn test_string(s in "[^\"]*") {
+            let s2 = "\"".to_owned() + &s + "\"";
+            let (rest, value) = string(&s2).unwrap();
+            prop_assert_eq!(rest, "");
+            prop_assert_eq!(value, Value::String(s));
+        }
     }
 }
