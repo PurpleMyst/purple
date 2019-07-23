@@ -37,17 +37,22 @@ pub enum ParseError<'a> {
     Custom {
         context: &'static str,
         input: &'a str,
+        span: usize,
     },
 }
 
 impl<'a> ParseError<'a> {
-    fn input_position(&self) -> Option<&'a str> {
+    /// Return the range of the code positions affected by this error.
+    /// Indexes are returned as "negative indices", i.e. `(5, 4)` means (input.len() - 5, input.len() - 4)`
+    fn span(&self) -> Option<(usize, usize)> {
         match self {
             ParseError::Or { .. } => None,
+
             ParseError::WithContext { input, .. }
             | ParseError::FromErrorKind { input, .. }
-            | ParseError::Custom { input, .. }
-            | ParseError::FromChar { input, .. } => Some(input),
+            | ParseError::FromChar { input, .. } => Some((input.len(), input.len() - 1)),
+
+            ParseError::Custom { input, span, .. } => Some((input.len(), input.len() - span)),
         }
     }
 
@@ -120,6 +125,7 @@ fn identifier(input: &str) -> IResult<Value> {
     } else {
         Err(nom::Err::Error(ParseError::Custom {
             context: "an identifier",
+            span: 1,
             input,
         }))
     }
@@ -134,6 +140,7 @@ fn number(input: &str) -> IResult<Value> {
         .map_err(|_| {
             nom::Err::Error(ParseError::Custom {
                 context: "an integer",
+                span: 1,
                 input,
             })
         })?;
@@ -141,7 +148,8 @@ fn number(input: &str) -> IResult<Value> {
     let (input, signedness) = one_of::<_, _, ParseError>("iu")(input).map_err(|_| {
         nom::Err::Error(ParseError::Custom {
             context: "a signedness specifier",
-            input,
+            span: start_input.len() - input.len(),
+            input: start_input,
         })
     })?;
 
@@ -150,7 +158,8 @@ fn number(input: &str) -> IResult<Value> {
         .map_err(|_| {
             nom::Err::Error(ParseError::Custom {
                 context: "an integer width",
-                input,
+                span: start_input.len() - input.len(),
+                input: start_input,
             })
         })?;
 
@@ -168,6 +177,7 @@ fn number(input: &str) -> IResult<Value> {
         _ => {
             return Err(nom::Err::Failure(ParseError::Custom {
                 context: "a valid integer width",
+                span: start_input.len() - input.len(),
                 input: start_input,
             }))
         }
@@ -180,6 +190,7 @@ fn string(input: &str) -> IResult<Value> {
     let (mut input, _) = char::<_, ParseError>('"')(input).map_err(|_| {
         nom::Err::Error(ParseError::Custom {
             context: "a string",
+            span: 1,
             input,
         })
     })?;
@@ -235,7 +246,8 @@ fn position(text: &str, remaining: usize) -> (usize, usize) {
 
 // TODO: group errors of a `ParseError::Or` together and display them in one "block"
 fn rusty_error(input: &str, error: ParseError<'_>) -> String {
-    let (row, col) = position(input, error.input_position().expect("input_position").len());
+    let (start, end) = error.span().expect("span");
+    let (row, col) = position(input, start);
 
     let line = input.split("\n").nth(row).expect("line");
 
@@ -271,7 +283,7 @@ fn rusty_error(input: &str, error: ParseError<'_>) -> String {
             " ".repeat(indent),
             "|".color(Color::Blue),
             " ".repeat(col + 1),
-            "^".color(Color::Yellow)
+            "^".repeat(start - end).color(Color::Yellow)
         ),
     ]
     .join("\n")
@@ -285,7 +297,12 @@ pub fn parse(input: &str) -> Result<Value, String> {
     //     |                       ^^^^^^^^^^^^^^ help: you could try the macro: `unimplemented`
 
     let error = match sexpr(input) {
-        Ok((_, value)) => return Ok(value),
+        Ok(("", value)) => return Ok(value),
+        Ok((rest, _)) => ParseError::Custom {
+            input: rest,
+            span: 1,
+            context: "EOF",
+        },
         Err(nom::Err::Error(error)) | Err(nom::Err::Failure(error)) => error,
         Err(nom::Err::Incomplete(..)) => unreachable!("only nom::*::complete functions are used"),
     };
