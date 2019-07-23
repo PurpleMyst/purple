@@ -1,10 +1,12 @@
+use std::borrow::Cow;
+
 use nom::{
     branch::alt,
-    character::complete::{alpha1, char, digit1, multispace0, none_of},
-    combinator::{map, map_res},
+    character::complete::{alpha1, char, digit1, multispace0, none_of, one_of},
+    combinator::{map, map_opt, map_res},
     error::VerboseError,
     multi::many0,
-    sequence::delimited,
+    sequence::{delimited, tuple},
 };
 
 use crate::value::Value;
@@ -18,11 +20,31 @@ macro_rules! ws {
 }
 
 fn identifier(input: &str) -> IResult<Value> {
-    map(alpha1, Value::Identifier)(input)
+    map(alpha1, |s| Value::Identifier(Cow::Borrowed(s)))(input)
 }
 
+// TODO: allow untyped integer literals and infer them in a pass
 fn number(input: &str) -> IResult<Value> {
-    map(map_res(digit1, str::parse), Value::U64)(input)
+    map_opt(
+        tuple((
+            map_res(digit1, str::parse),
+            one_of("iu"),
+            map_res(digit1, str::parse),
+        )),
+        |n: (u64, char, u8)| match n {
+            (n, 'u', 64) => Some(Value::U64(n as u64)),
+            (n, 'u', 32) => Some(Value::U32(n as u32)),
+            (n, 'u', 16) => Some(Value::U16(n as u16)),
+            (n, 'u', 8) => Some(Value::U8(n as u8)),
+
+            (n, 'i', 64) => Some(Value::I64(n as i64)),
+            (n, 'i', 32) => Some(Value::I32(n as i32)),
+            (n, 'i', 16) => Some(Value::I16(n as i16)),
+            (n, 'i', 8) => Some(Value::I8(n as i8)),
+
+            _ => None,
+        },
+    )(input)
 }
 
 fn string(input: &str) -> IResult<Value> {
