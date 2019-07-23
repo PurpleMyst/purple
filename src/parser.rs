@@ -7,13 +7,7 @@ use nom::{
     sequence::delimited,
 };
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Value<'a> {
-    Number(u64),
-    Identifier(&'a str),
-    String(String),
-    SExpr(Vec<Value<'a>>),
-}
+use crate::value::Value;
 
 type IResult<'a, T> = nom::IResult<&'a str, T, VerboseError<&'a str>>;
 
@@ -28,7 +22,7 @@ fn identifier(input: &str) -> IResult<Value> {
 }
 
 fn number(input: &str) -> IResult<Value> {
-    map(map_res(digit1, str::parse), Value::Number)(input)
+    map(map_res(digit1, str::parse), Value::U64)(input)
 }
 
 fn string(input: &str) -> IResult<Value> {
@@ -69,7 +63,7 @@ mod tests {
 
         #[test]
         fn test_number(ns in "[0-9]|[1-9][0-9]{0,10}") {
-            if let Ok(("", Value::Number(n))) = number(&ns) {
+            if let Ok(("", Value::U64(n))) = number(&ns) {
                 prop_assert_eq!(n.to_string(), ns);
             } else {
                 unreachable!()

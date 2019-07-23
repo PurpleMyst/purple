@@ -19,7 +19,7 @@ This language has a few design goals:
 
 The current syntax is very basic; There exist the following values:
 
-- `Value::Number(u64)` → 64-bit integer
+- `Value::U64(u64)` → 64-bit integer
 - `Value::Identifier(&'_ str)` → identifier, refers to variables, right now
   just alphabetical characters
 - `Value::String(String)` → strings! no escapes supported just yet
