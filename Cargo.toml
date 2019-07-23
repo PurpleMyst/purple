@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 nom = "5.0.0"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm7-0" }
+colorful = "0.2.1"
 
 [dev-dependencies]
 proptest = "0.9.4"
