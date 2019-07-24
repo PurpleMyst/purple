@@ -158,52 +158,14 @@ impl<'a> Compiler<'a> {
 
     pub fn compile(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
         Ok(match value {
-            Value::U64(n) => self
+            Value::Integer {
+                value,
+                signed,
+                size,
+            } => self
                 .context
-                .i64_type()
-                .const_int(n, false)
-                .as_basic_value_enum(),
-
-            Value::U32(n) => self
-                .context
-                .i32_type()
-                .const_int(n as u64, false)
-                .as_basic_value_enum(),
-
-            Value::U16(n) => self
-                .context
-                .i16_type()
-                .const_int(n as u64, false)
-                .as_basic_value_enum(),
-
-            Value::U8(n) => self
-                .context
-                .i8_type()
-                .const_int(n as u64, false)
-                .as_basic_value_enum(),
-
-            Value::I64(n) => self
-                .context
-                .i64_type()
-                .const_int(n as u64, true)
-                .as_basic_value_enum(),
-
-            Value::I32(n) => self
-                .context
-                .i32_type()
-                .const_int(n as u64, true)
-                .as_basic_value_enum(),
-
-            Value::I16(n) => self
-                .context
-                .i16_type()
-                .const_int(n as u64, true)
-                .as_basic_value_enum(),
-
-            Value::I8(n) => self
-                .context
-                .i8_type()
-                .const_int(n as u64, true)
+                .custom_width_int_type(size as u32)
+                .const_int(value, signed)
                 .as_basic_value_enum(),
 
             Value::String(s) => self

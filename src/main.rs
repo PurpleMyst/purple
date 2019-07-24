@@ -4,6 +4,8 @@ mod compiler;
 mod parser;
 
 fn main() {
-    let err = parser::parse("(function main () int (mul 0i37 2i32))").unwrap_err();
-    eprintln!("{}", err);
+    match parser::parse("(function main () int (mul 0i42 2i69))") {
+        Ok(v) => println!("{:?}", v),
+        Err(err) => eprintln!("{}", err),
+    }
 }

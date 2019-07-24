@@ -189,19 +189,24 @@ fn identifier(input: &str) -> IResult<Value> {
 fn number(input: &str) -> IResult<Value> {
     let start_input = input;
 
-    let (input, n) = digit1::<_, ParseError>(input)
+    let (input, value) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
         .map_err(|_| ParseError::expected("an integer", input, 1))?;
 
-    let (input, signedness) = one_of::<_, _, ParseError>("iu")(input).map_err(|_| {
+    let (input, signed) = one_of::<_, _, ParseError>("iu")(input).map_err(|_| {
         ParseError::expected(
             "a signedness specifier",
             start_input,
             start_input.len() - input.len(),
         )
     })?;
+    let signed = match signed {
+        'i' => true,
+        'u' => false,
+        _ => unreachable!(),
+    };
 
-    let (input, width) = digit1::<_, ParseError>(input)
+    let (input, size) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
         .map_err(|_| {
             ParseError::expected(
@@ -211,27 +216,22 @@ fn number(input: &str) -> IResult<Value> {
             )
         })?;
 
-    let value = match (signedness, width) {
-        ('u', 64) => Value::U64(n),
-        ('u', 32) => Value::U32(n as u32),
-        ('u', 16) => Value::U16(n as u16),
-        ('u', 8) => Value::U8(n as u8),
+    if size < 1 || size > 64 {
+        return Err(ParseError::expected_unrecoverable(
+            "an integer size between 1 and 64",
+            start_input,
+            start_input.len() - input.len(),
+        ));
+    }
 
-        ('i', 64) => Value::I64(n as i64),
-        ('i', 32) => Value::I32(n as i32),
-        ('i', 16) => Value::I16(n as i16),
-        ('i', 8) => Value::I8(n as i8),
-
-        _ => {
-            return Err(ParseError::expected_unrecoverable(
-                "a valid integer width",
-                start_input,
-                start_input.len() - input.len(),
-            ))
-        }
-    };
-
-    Ok((input, value))
+    Ok((
+        input,
+        Value::Integer {
+            signed,
+            size,
+            value,
+        },
+    ))
 }
 
 fn string(input: &str) -> IResult<Value> {
@@ -288,12 +288,6 @@ fn position(text: &str, remaining: usize) -> (usize, usize) {
 }
 
 pub fn parse(input: &str) -> Result<Value, String> {
-    // error: cannot find macro `xunimplemented!` in this scope
-    //    --> src/parser.rs:113:23
-    //     |
-    // 113 |         Ok((_, _)) => xunimplemented!(),
-    //     |                       ^^^^^^^^^^^^^^ help: you could try the macro: `unimplemented`
-
     let error = match sexpr(input) {
         Ok(("", value)) => return Ok(value),
         Ok((rest, _)) => ParseError::Custom {
@@ -339,18 +333,11 @@ mod tests {
 
             prop_assert_eq!(rest, "");
 
-            prop_assert_eq!(ns, match v {
-                Value::U64(n) => n.to_string(),
-                Value::U32(n) => n.to_string(),
-                Value::U16(n) => n.to_string(),
-                Value::U8(n) => n.to_string(),
-
-                Value::I64(n) => n.to_string(),
-                Value::I32(n) => n.to_string(),
-                Value::I16(n) => n.to_string(),
-                Value::I8(n) => n.to_string(),
-
-                _ => unreachable!(),
+            prop_assert_eq!(ns, if let Value::Integer { value, .. } = v {
+                // FIXME: Properly display negative integers
+                value.to_string()
+            } else {
+                unreachable!()
             });
         }
 
