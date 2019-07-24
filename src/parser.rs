@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use colorful::{Color, Colorful};
 use nom::{
     branch::alt,
-    character::complete::{alpha1, anychar, char, digit1, multispace0, none_of, one_of},
+    bytes::complete::take_while,
+    character::complete::{anychar, char, digit1, multispace0, one_of},
     error::ErrorKind,
     sequence::delimited,
 };
@@ -86,7 +87,7 @@ impl<'a> ParseError<'a> {
     }
 
     // TODO: group errors of a `ParseError::Or` together and display them in one "block"
-    fn show(self, input: &str) -> String {
+    fn show(self, input: &str, filename: &str) -> String {
         let (start, end) = self.span().expect("span");
         let (row, col) = position(input, start);
 
@@ -103,9 +104,10 @@ impl<'a> ParseError<'a> {
             ),
             // source location
             format!(
-                "{}{} <input>:{}:{}",
+                "{}{} {}:{}:{}",
                 " ".repeat(indent - 1),
                 "-->".color(Color::Blue),
+                filename,
                 row + 1,
                 col + 1
             ),
@@ -178,16 +180,32 @@ macro_rules! ws {
 }
 
 fn identifier(input: &str) -> IResult<Value> {
-    if let Ok((input, ident)) = alpha1::<&str, ParseError<'_>>(input) {
-        Ok((input, Value::Identifier(Cow::Borrowed(ident))))
-    } else {
-        Err(ParseError::expected("an identifier", input, 1))
-    }
+    const IDENTIFIER_START_CHARACTERS: &'static str = concat!(
+        "abcdefghijklmnopqrstuvwxyz",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "_-",
+    );
+
+    const IDENTIFIER_CHARACTERS: &'static str = concat!(
+        "abcdefghijklmnopqrstuvwxyz",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "_-",
+        "0123456789",
+    );
+
+    // We're just checking if the character is an identifier start character, we utilize the next
+    // line to actually get the identifier characters
+    one_of::<_, _, ParseError>(IDENTIFIER_START_CHARACTERS)(input)
+        .map_err(|_| ParseError::expected("an identifier", input, 1))?;
+
+    let (input, ident) = take_while(|c| IDENTIFIER_CHARACTERS.contains(c))(input)?;
+
+    Ok((input, Value::Identifier(Cow::Borrowed(ident))))
 }
 
 fn integer_sign(input: &str) -> IResult<bool> {
     let (new_input, signed) = one_of::<_, _, ParseError>("iu")(input)
-        .map_err(|_| ParseError::expected("a signedness specifier", input, 1))?;
+        .map_err(|_| ParseError::expected_unrecoverable("either 'i' or 'u'", input, 1))?;
 
     Ok((
         new_input,
@@ -215,7 +233,8 @@ fn integer_size(input: &str) -> IResult<u32> {
     Ok((new_input, size))
 }
 
-// TODO: allow untyped integer literals and infer them in a pass
+// TODO: allow unspecified-size integer literals and infer them in a pass
+// TODO: put out a warning(error?) if something like `2i32x` is typed
 fn integer(input: &str) -> IResult<Value> {
     let (input, value) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
@@ -288,9 +307,12 @@ fn position(text: &str, remaining: usize) -> (usize, usize) {
         })
 }
 
-pub fn parse(input: &str) -> Result<Value, String> {
-    let error = match sexpr(input) {
-        Ok(("", value)) => return Ok(value),
+pub fn parse(filename: &str) -> Result<Value, String> {
+    // FIXME: better error if filename does not exist
+    let input = std::fs::read_to_string(filename).unwrap();
+
+    let error = match sexpr(&input) {
+        Ok(("", value)) => return Ok(value.to_static_lifetime()),
         Ok((rest, _)) => ParseError::Custom {
             input: rest,
             span: 1,
@@ -303,11 +325,11 @@ pub fn parse(input: &str) -> Result<Value, String> {
     if let ParseError::Or(operands) = error {
         Err(operands
             .into_iter()
-            .map(|error| error.show(input))
+            .map(|error| error.show(&input, filename))
             .collect::<Vec<_>>()
             .join("\n\n"))
     } else {
-        Err(error.show(input))
+        Err(error.show(&input, filename))
     }
 }
 
