@@ -8,7 +8,7 @@ use inkwell::{
     values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue},
 };
 
-use crate::value::Value;
+use crate::value::{IntegerType, Value};
 
 #[derive(Default, Debug)]
 struct Frame<'a> {
@@ -160,8 +160,7 @@ impl<'a> Compiler<'a> {
         Ok(match value {
             Value::Integer {
                 value,
-                signed,
-                size,
+                ty: IntegerType { size, signed },
             } => self
                 .context
                 .custom_width_int_type(size)

@@ -8,7 +8,10 @@ use nom::{
     sequence::delimited,
 };
 
-use crate::{diagnostic::Diagnostic, value::Value};
+use crate::{
+    diagnostic::Diagnostic,
+    value::{IntegerType, Value},
+};
 
 #[derive(Debug)]
 pub enum ParseError<'a> {
@@ -200,9 +203,8 @@ fn integer(input: &str) -> IResult<Value> {
     Ok((
         input,
         Value::Integer {
-            signed,
-            size,
             value,
+            ty: IntegerType { signed, size },
         },
     ))
 }
@@ -246,10 +248,6 @@ fn sexpr(input: &str) -> IResult<Value> {
             },
         }
     }
-}
-
-fn position(text: &str, remaining: usize) -> (usize, usize) {
-    unreachable!("moved to Diagnostic");
 }
 
 pub fn parse(filename: &str) -> Result<Value, Vec<Diagnostic>> {

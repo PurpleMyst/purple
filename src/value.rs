@@ -1,8 +1,14 @@
 use std::borrow::Cow;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct IntegerType {
+    pub size: u32,
+    pub signed: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value<'a> {
-    Integer { value: u64, size: u32, signed: bool },
+    Integer { value: u64, ty: IntegerType },
 
     Identifier(Cow<'a, str>),
 
@@ -16,14 +22,9 @@ impl<'a> Value<'a> {
         match self {
             Value::Identifier(s) => Value::Identifier(Cow::Owned(s.to_owned().into_owned())),
             Value::SExpr(v) => Value::SExpr(v.iter().map(Value::to_static_lifetime).collect()),
-            Value::Integer {
-                value,
-                size,
-                signed,
-            } => Value::Integer {
+            Value::Integer { value, ty } => Value::Integer {
                 value: *value,
-                size: *size,
-                signed: *signed,
+                ty: *ty,
             },
             Value::String(s) => Value::String(s.clone()),
         }
