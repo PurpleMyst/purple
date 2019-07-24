@@ -4,9 +4,7 @@ use colorful::{Color, Colorful};
 use nom::{
     branch::alt,
     character::complete::{alpha1, anychar, char, digit1, multispace0, none_of, one_of},
-    combinator::{map, map_res},
-    error::{context, ErrorKind},
-    multi::many0,
+    error::ErrorKind,
     sequence::delimited,
 };
 
@@ -14,9 +12,7 @@ use crate::value::Value;
 
 #[derive(Debug)]
 pub enum ParseError<'a> {
-    Or {
-        operands: Vec<Self>,
-    },
+    Or(Vec<Self>),
 
     FromErrorKind {
         input: &'a str,
@@ -56,7 +52,7 @@ impl<'a> ParseError<'a> {
         }
     }
 
-    fn expected(&self) -> Option<String> {
+    fn message(&self) -> Option<String> {
         Some(format!(
             "Expected {}",
             match self {
@@ -67,6 +63,71 @@ impl<'a> ParseError<'a> {
                 ParseError::Or { .. } => return None,
             }
         ))
+    }
+
+    fn expected(context: &'static str, input: &'a str, span: usize) -> nom::Err<Self> {
+        nom::Err::Error(ParseError::Custom {
+            context,
+            input,
+            span,
+        })
+    }
+
+    fn expected_unrecoverable(
+        context: &'static str,
+        input: &'a str,
+        span: usize,
+    ) -> nom::Err<Self> {
+        nom::Err::Failure(ParseError::Custom {
+            context,
+            input,
+            span,
+        })
+    }
+
+    // TODO: group errors of a `ParseError::Or` together and display them in one "block"
+    fn show(self, input: &str) -> String {
+        let (start, end) = self.span().expect("span");
+        let (row, col) = position(input, start);
+
+        let line = input.split("\n").nth(row).expect("line");
+
+        let indent = (row + 1).to_string().len() + 1;
+
+        [
+            // header
+            format!(
+                "{}: {}",
+                "error".color(Color::Red),
+                self.message().expect("expected")
+            ),
+            // source location
+            format!(
+                "{}{} <input>:{}:{}",
+                " ".repeat(indent - 1),
+                "-->".color(Color::Blue),
+                row + 1,
+                col + 1
+            ),
+            // above context
+            format!("{}{}", " ".repeat(indent), "|".color(Color::Blue)),
+            // code line
+            format!(
+                "{} {} {}",
+                (row + 1).to_string().color(Color::Blue),
+                "|".color(Color::Blue),
+                line
+            ),
+            // bottom context
+            format!(
+                "{}{}{}{}",
+                " ".repeat(indent),
+                "|".color(Color::Blue),
+                " ".repeat(col + 1),
+                "^".repeat(start - end).color(Color::Yellow)
+            ),
+        ]
+        .join("\n")
     }
 }
 
@@ -80,22 +141,19 @@ impl<'a> nom::error::ParseError<&'a str> for ParseError<'a> {
     }
 
     fn or(self, other: Self) -> Self {
-        let mut operands = if let ParseError::Or { operands } = self {
+        let mut operands = if let ParseError::Or(operands) = self {
             operands
         } else {
             vec![self]
         };
 
-        if let ParseError::Or {
-            operands: other_operands,
-        } = other
-        {
+        if let ParseError::Or(other_operands) = other {
             operands.extend(other_operands);
         } else {
             operands.push(other);
         }
 
-        ParseError::Or { operands }
+        ParseError::Or(operands)
     }
 
     fn from_char(input: &'a str, c: char) -> Self {
@@ -123,11 +181,7 @@ fn identifier(input: &str) -> IResult<Value> {
     if let Ok((input, ident)) = alpha1::<&str, ParseError<'_>>(input) {
         Ok((input, Value::Identifier(Cow::Borrowed(ident))))
     } else {
-        Err(nom::Err::Error(ParseError::Custom {
-            context: "an identifier",
-            span: 1,
-            input,
-        }))
+        Err(ParseError::expected("an identifier", input, 1))
     }
 }
 
@@ -137,30 +191,24 @@ fn number(input: &str) -> IResult<Value> {
 
     let (input, n) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
-        .map_err(|_| {
-            nom::Err::Error(ParseError::Custom {
-                context: "an integer",
-                span: 1,
-                input,
-            })
-        })?;
+        .map_err(|_| ParseError::expected("an integer", input, 1))?;
 
     let (input, signedness) = one_of::<_, _, ParseError>("iu")(input).map_err(|_| {
-        nom::Err::Error(ParseError::Custom {
-            context: "a signedness specifier",
-            span: start_input.len() - input.len(),
-            input: start_input,
-        })
+        ParseError::expected(
+            "a signedness specifier",
+            start_input,
+            start_input.len() - input.len(),
+        )
     })?;
 
     let (input, width) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
         .map_err(|_| {
-            nom::Err::Error(ParseError::Custom {
-                context: "an integer width",
-                span: start_input.len() - input.len(),
-                input: start_input,
-            })
+            ParseError::expected(
+                "an integer width",
+                start_input,
+                start_input.len() - input.len(),
+            )
         })?;
 
     let value = match (signedness, width) {
@@ -175,11 +223,11 @@ fn number(input: &str) -> IResult<Value> {
         ('i', 8) => Value::I8(n as i8),
 
         _ => {
-            return Err(nom::Err::Failure(ParseError::Custom {
-                context: "a valid integer width",
-                span: start_input.len() - input.len(),
-                input: start_input,
-            }))
+            return Err(ParseError::expected_unrecoverable(
+                "a valid integer width",
+                start_input,
+                start_input.len() - input.len(),
+            ))
         }
     };
 
@@ -187,13 +235,8 @@ fn number(input: &str) -> IResult<Value> {
 }
 
 fn string(input: &str) -> IResult<Value> {
-    let (mut input, _) = char::<_, ParseError>('"')(input).map_err(|_| {
-        nom::Err::Error(ParseError::Custom {
-            context: "a string",
-            span: 1,
-            input,
-        })
-    })?;
+    let (mut input, _) = char::<_, ParseError>('"')(input)
+        .map_err(|_| ParseError::expected("a string", input, 1))?;
     let mut result = String::new();
 
     loop {
@@ -244,51 +287,6 @@ fn position(text: &str, remaining: usize) -> (usize, usize) {
         })
 }
 
-// TODO: group errors of a `ParseError::Or` together and display them in one "block"
-fn rusty_error(input: &str, error: ParseError<'_>) -> String {
-    let (start, end) = error.span().expect("span");
-    let (row, col) = position(input, start);
-
-    let line = input.split("\n").nth(row).expect("line");
-
-    let indent = (row + 1).to_string().len() + 1;
-
-    [
-        // header
-        format!(
-            "{}: {}",
-            "error".color(Color::Red),
-            error.expected().expect("expected")
-        ),
-        // source location
-        format!(
-            "{}{} <input>:{}:{}",
-            " ".repeat(indent - 1),
-            "-->".color(Color::Blue),
-            row + 1,
-            col + 1
-        ),
-        // above context
-        format!("{}{}", " ".repeat(indent), "|".color(Color::Blue)),
-        // code line
-        format!(
-            "{} {} {}",
-            (row + 1).to_string().color(Color::Blue),
-            "|".color(Color::Blue),
-            line
-        ),
-        // bottom context
-        format!(
-            "{}{}{}{}",
-            " ".repeat(indent),
-            "|".color(Color::Blue),
-            " ".repeat(col + 1),
-            "^".repeat(start - end).color(Color::Yellow)
-        ),
-    ]
-    .join("\n")
-}
-
 pub fn parse(input: &str) -> Result<Value, String> {
     // error: cannot find macro `xunimplemented!` in this scope
     //    --> src/parser.rs:113:23
@@ -307,14 +305,14 @@ pub fn parse(input: &str) -> Result<Value, String> {
         Err(nom::Err::Incomplete(..)) => unreachable!("only nom::*::complete functions are used"),
     };
 
-    if let ParseError::Or { operands } = error {
+    if let ParseError::Or(operands) = error {
         Err(operands
             .into_iter()
-            .map(|error| rusty_error(input, error))
+            .map(|error| error.show(input))
             .collect::<Vec<_>>()
             .join("\n\n"))
     } else {
-        Err(rusty_error(input, error))
+        Err(error.show(input))
     }
 }
 
