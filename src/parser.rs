@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-use colorful::{Color, Colorful};
 use nom::{
     branch::alt,
     bytes::complete::take_while,
@@ -9,7 +8,7 @@ use nom::{
     sequence::delimited,
 };
 
-use crate::value::Value;
+use crate::{diagnostic::Diagnostic, value::Value};
 
 #[derive(Debug)]
 pub enum ParseError<'a> {
@@ -84,52 +83,6 @@ impl<'a> ParseError<'a> {
             input,
             span,
         })
-    }
-
-    // TODO: group errors of a `ParseError::Or` together and display them in one "block"
-    fn show(self, input: &str, filename: &str) -> String {
-        let (start, end) = self.span().expect("span");
-        let (row, col) = position(input, start);
-
-        let line = input.split("\n").nth(row).expect("line");
-
-        let indent = (row + 1).to_string().len() + 1;
-
-        [
-            // header
-            format!(
-                "{}: {}",
-                "error".color(Color::Red),
-                self.message().expect("expected")
-            ),
-            // source location
-            format!(
-                "{}{} {}:{}:{}",
-                " ".repeat(indent - 1),
-                "-->".color(Color::Blue),
-                filename,
-                row + 1,
-                col + 1
-            ),
-            // above context
-            format!("{}{}", " ".repeat(indent), "|".color(Color::Blue)),
-            // code line
-            format!(
-                "{} {} {}",
-                (row + 1).to_string().color(Color::Blue),
-                "|".color(Color::Blue),
-                line
-            ),
-            // bottom context
-            format!(
-                "{}{}{}{}",
-                " ".repeat(indent),
-                "|".color(Color::Blue),
-                " ".repeat(col + 1),
-                "^".repeat(start - end).color(Color::Yellow)
-            ),
-        ]
-        .join("\n")
     }
 }
 
@@ -296,18 +249,10 @@ fn sexpr(input: &str) -> IResult<Value> {
 }
 
 fn position(text: &str, remaining: usize) -> (usize, usize) {
-    text.chars()
-        .take(text.len() - remaining)
-        .fold((0, 0), |(row, col), c| {
-            if c == '\n' {
-                (row + 1, 0)
-            } else {
-                (row, col + 1)
-            }
-        })
+    unreachable!("moved to Diagnostic");
 }
 
-pub fn parse(filename: &str) -> Result<Value, String> {
+pub fn parse(filename: &str) -> Result<Value, Vec<Diagnostic>> {
     // FIXME: better error if filename does not exist
     let input = std::fs::read_to_string(filename).unwrap();
 
@@ -322,14 +267,25 @@ pub fn parse(filename: &str) -> Result<Value, String> {
         Err(nom::Err::Incomplete(..)) => unreachable!("only nom::*::complete functions are used"),
     };
 
+    let to_diagnostic = |error: ParseError| {
+        let (start, end) = error.span().unwrap();
+
+        Diagnostic {
+            input: input.to_owned(),
+            filename: filename.to_owned(),
+            start: input.len() - start,
+            end: input.len() - end,
+            level: ("error", colorful::Color::Red),
+            level_message: Some(error.message().unwrap()),
+            below_message: None,
+            note: None,
+        }
+    };
+
     if let ParseError::Or(operands) = error {
-        Err(operands
-            .into_iter()
-            .map(|error| error.show(&input, filename))
-            .collect::<Vec<_>>()
-            .join("\n\n"))
+        Err(operands.into_iter().map(to_diagnostic).collect::<Vec<_>>())
     } else {
-        Err(error.show(&input, filename))
+        Err(vec![to_diagnostic(error)])
     }
 }
 
