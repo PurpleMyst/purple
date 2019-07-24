@@ -164,7 +164,7 @@ impl<'a> Compiler<'a> {
                 size,
             } => self
                 .context
-                .custom_width_int_type(size as u32)
+                .custom_width_int_type(size)
                 .const_int(value, signed)
                 .as_basic_value_enum(),
 

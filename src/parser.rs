@@ -185,44 +185,45 @@ fn identifier(input: &str) -> IResult<Value> {
     }
 }
 
-// TODO: allow untyped integer literals and infer them in a pass
-fn number(input: &str) -> IResult<Value> {
-    let start_input = input;
+fn integer_sign(input: &str) -> IResult<bool> {
+    let (new_input, signed) = one_of::<_, _, ParseError>("iu")(input)
+        .map_err(|_| ParseError::expected("a signedness specifier", input, 1))?;
 
-    let (input, value) = digit1::<_, ParseError>(input)
+    Ok((
+        new_input,
+        match signed {
+            'i' => true,
+            'u' => false,
+            _ => unreachable!(),
+        },
+    ))
+}
+
+fn integer_size(input: &str) -> IResult<u32> {
+    let (new_input, size) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
-        .map_err(|_| ParseError::expected("an integer", input, 1))?;
-
-    let (input, signed) = one_of::<_, _, ParseError>("iu")(input).map_err(|_| {
-        ParseError::expected(
-            "a signedness specifier",
-            start_input,
-            start_input.len() - input.len(),
-        )
-    })?;
-    let signed = match signed {
-        'i' => true,
-        'u' => false,
-        _ => unreachable!(),
-    };
-
-    let (input, size) = digit1::<_, ParseError>(input)
-        .map(|(input, s)| (input, s.parse().unwrap()))
-        .map_err(|_| {
-            ParseError::expected(
-                "an integer width",
-                start_input,
-                start_input.len() - input.len(),
-            )
-        })?;
+        .map_err(|_| ParseError::expected("an integer width", input, input.len() - input.len()))?;
 
     if size < 1 || size > 64 {
         return Err(ParseError::expected_unrecoverable(
             "an integer size between 1 and 64",
-            start_input,
-            start_input.len() - input.len(),
+            input,
+            input.len() - new_input.len(),
         ));
     }
+
+    Ok((new_input, size))
+}
+
+// TODO: allow untyped integer literals and infer them in a pass
+fn integer(input: &str) -> IResult<Value> {
+    let (input, value) = digit1::<_, ParseError>(input)
+        .map(|(input, s)| (input, s.parse().unwrap()))
+        .map_err(|_| ParseError::expected("an integer", input, 1))?;
+
+    let (input, signed) = integer_sign(input)?;
+
+    let (input, size) = integer_size(input)?;
 
     Ok((
         input,
@@ -252,7 +253,7 @@ fn string(input: &str) -> IResult<Value> {
 }
 
 fn value(input: &str) -> IResult<Value> {
-    alt((string, number, identifier, sexpr))(input)
+    alt((string, integer, identifier, sexpr))(input)
 }
 
 // FIXME: Show proper error here, not just `Expected ')'`.
@@ -318,18 +319,15 @@ mod tests {
     proptest! {
         #[test]
         fn test_identifier(s in "[a-zA-Z]+") {
-            if let ("", Value::Identifier(s2)) = identifier(&s).unwrap() {
-                prop_assert_eq!(&s2, &s);
-            } else {
-                unreachable!()
-            }
+            let ("", Value::Identifier(s2)) = identifier(&s).unwrap();
+            prop_assert_eq!(&s2, &s);
         }
 
         #[test]
         #[ignore] // FIXME: take into consideration  integer width!
         fn test_number(ns in "([0-9]|[1-9][0-9]{0,0})", ss in "[iu](8|16|32|64)") {
             let ws = ns.clone() + &ss;
-            let (rest, v) = number(&ws).unwrap();
+            let (rest, v) = integer(&ws).unwrap();
 
             prop_assert_eq!(rest, "");
 

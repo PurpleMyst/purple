@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value<'a> {
-    Integer { value: u64, size: u8, signed: bool },
+    Integer { value: u64, size: u32, signed: bool },
 
     Identifier(Cow<'a, str>),
 
