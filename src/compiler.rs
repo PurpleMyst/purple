@@ -8,7 +8,10 @@ use inkwell::{
     values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue},
 };
 
-use crate::value::{IntegerType, Value};
+use crate::{
+    diagnostic::Diagnostic,
+    value::{IntegerType, Value, ValueData},
+};
 
 #[derive(Default, Debug)]
 struct Frame<'a> {
@@ -24,12 +27,22 @@ pub struct Compiler<'a> {
     frames: VecDeque<Frame<'a>>,
 }
 
-// FIXME: Include span information?
 #[derive(Debug)]
-pub enum CompileError {
-    UndefinedVariable(String),
-    InvalidType(Value<'static>),
-    InvalidShape(Value<'static>, &'static str),
+pub struct CompileError {
+    message: &'static str,
+    span: (usize, usize),
+}
+
+impl From<CompileError> for Diagnostic {
+    fn from(error: CompileError) -> Diagnostic {
+        Diagnostic {
+            span: error.span,
+            level: ("error", colorful::Color::Red),
+            level_message: Some(error.message.to_owned()),
+            below_message: None,
+            note: None,
+        }
+    }
 }
 
 pub type Result<T, E = CompileError> = std::result::Result<T, E>;
@@ -37,11 +50,14 @@ pub type Result<T, E = CompileError> = std::result::Result<T, E>;
 macro_rules! expect_variant {
     ($var:expr => $variant:ident) => {{
         let var = $var;
-        if let Value::$variant(x) = var {
+        let span = var.span;
+        if let ValueData::$variant(ref x) = var.data {
             Ok(x)
         } else {
-            let err: CompileError = CompileError::InvalidType(var.to_static_lifetime());
-            Err(err)
+            Err(CompileError {
+                message: concat!("Expected value of type ", stringify!($variant)),
+                span: span,
+            })
         }
     }};
 }
@@ -72,20 +88,27 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_identifier(&mut self, ident: &'_ str) -> Result<BasicValueEnum> {
+    fn compile_identifier(&mut self, ident: &str, span: (usize, usize)) -> Result<BasicValueEnum> {
         self.frames
             .iter()
             .find_map(|frame| frame.variables.get(ident))
             .map(|value| value.as_basic_value_enum())
-            .ok_or_else(|| CompileError::UndefinedVariable(ident.to_owned()))
+            .ok_or_else(|| CompileError {
+                message: "Undefined variable",
+                span,
+            })
     }
 
     fn get_type_from_value(&self, name: &Value<'_>) -> Result<BasicTypeEnum> {
-        let name: &str = expect_variant!(name => Identifier)?;
-
-        Ok(match name {
-            "int" => self.context.i32_type().as_basic_type_enum(),
-            _ => unimplemented!(),
+        // FIXME: handle the same integer types as the parser
+        Ok(match &expect_variant!(name => Identifier)? as &str {
+            "i32" => self.context.i32_type().as_basic_type_enum(),
+            _ => {
+                return Err(CompileError {
+                    message: "Unknown type",
+                    span: name.span,
+                })
+            }
         })
     }
 
@@ -99,12 +122,11 @@ impl<'a> Compiler<'a> {
         let parameter_types = parameters
             .iter()
             .map(|sexpr| {
-                self.get_type_from_value(expect_variant!(sexpr => SExpr)?.get(0).ok_or_else(
-                    || {
-                        CompileError::InvalidShape(
-                            sexpr.to_static_lifetime(),
-                            "two-item s expression",
-                        )
+                self.get_type_from_value(expect_variant!(sexpr => List)?.get(0).ok_or_else(
+                    || CompileError {
+                        message:
+                            "Expected a two-length list containing the type and the argument name",
+                        span: sexpr.span,
                     },
                 )?)
             })
@@ -142,8 +164,8 @@ impl<'a> Compiler<'a> {
                 let body = &sexpr[4..];
 
                 self.compile_function(
-                    expect_variant!(name => Identifier)?,
-                    expect_variant!(parameters => SExpr)?,
+                    &expect_variant!(name => Identifier)?,
+                    expect_variant!(parameters => List)?.as_slice(),
                     self.get_type_from_value(return_type)?,
                     body,
                 )?
@@ -157,8 +179,8 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn compile(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
-        Ok(match value {
-            Value::Integer {
+        Ok(match value.data {
+            ValueData::Integer {
                 value,
                 ty: IntegerType { size, signed },
             } => self
@@ -167,12 +189,14 @@ impl<'a> Compiler<'a> {
                 .const_int(value, signed)
                 .as_basic_value_enum(),
 
-            Value::String(s) => self
+            ValueData::String(s) => self
                 .context
                 .const_string(&s, /*null_terminated:*/ false)
                 .as_basic_value_enum(),
-            Value::Identifier(s) => self.compile_identifier(s.as_ref())?,
-            Value::SExpr(v) => self.compile_sexpr(v)?,
+
+            ValueData::Identifier(s) => self.compile_identifier(s.as_ref(), value.span)?,
+
+            ValueData::List(v) => self.compile_sexpr(v)?,
         })
     }
 }

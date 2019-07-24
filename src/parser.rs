@@ -10,7 +10,7 @@ use nom::{
 
 use crate::{
     diagnostic::Diagnostic,
-    value::{IntegerType, Value},
+    value::{IntegerType, Value, ValueData},
 };
 
 #[derive(Debug)]
@@ -135,6 +135,11 @@ macro_rules! ws {
     };
 }
 
+// NOTE: This returns a "negative index" span, to be converted in `self::parse`.
+fn calculate_span(start_input: &str, end_input: &str) -> (usize, usize) {
+    (start_input.len(), end_input.len())
+}
+
 fn identifier(input: &str) -> IResult<Value> {
     const IDENTIFIER_START_CHARACTERS: &'static str = concat!(
         "abcdefghijklmnopqrstuvwxyz",
@@ -149,6 +154,8 @@ fn identifier(input: &str) -> IResult<Value> {
         "0123456789",
     );
 
+    let start_input = input;
+
     // We're just checking if the character is an identifier start character, we utilize the next
     // line to actually get the identifier characters
     one_of::<_, _, ParseError>(IDENTIFIER_START_CHARACTERS)(input)
@@ -156,7 +163,10 @@ fn identifier(input: &str) -> IResult<Value> {
 
     let (input, ident) = take_while(|c| IDENTIFIER_CHARACTERS.contains(c))(input)?;
 
-    Ok((input, Value::Identifier(Cow::Borrowed(ident))))
+    let data = ValueData::Identifier(Cow::Borrowed(ident));
+    let span = calculate_span(start_input, input);
+
+    Ok((input, Value { data, span }))
 }
 
 fn integer_sign(input: &str) -> IResult<bool> {
@@ -168,7 +178,7 @@ fn integer_sign(input: &str) -> IResult<bool> {
         match signed {
             'i' => true,
             'u' => false,
-            _ => unreachable!(),
+            _ => unreachable!("the one_of above only matches i and u"),
         },
     ))
 }
@@ -192,6 +202,8 @@ fn integer_size(input: &str) -> IResult<u32> {
 // TODO: allow unspecified-size integer literals and infer them in a pass
 // TODO: put out a warning(error?) if something like `2i32x` is typed
 fn integer(input: &str) -> IResult<Value> {
+    let start_input = input;
+
     let (input, value) = digit1::<_, ParseError>(input)
         .map(|(input, s)| (input, s.parse().unwrap()))
         .map_err(|_| ParseError::expected("an integer", input, 1))?;
@@ -200,26 +212,31 @@ fn integer(input: &str) -> IResult<Value> {
 
     let (input, size) = integer_size(input)?;
 
-    Ok((
-        input,
-        Value::Integer {
-            value,
-            ty: IntegerType { signed, size },
-        },
-    ))
+    let data = ValueData::Integer {
+        value,
+        ty: IntegerType { signed, size },
+    };
+    let span = calculate_span(start_input, input);
+
+    Ok((input, Value { data, span }))
 }
 
 fn string(input: &str) -> IResult<Value> {
+    let start_input = input;
+
     let (mut input, _) = char::<_, ParseError>('"')(input)
         .map_err(|_| ParseError::expected("a string", input, 1))?;
-    let mut result = String::new();
 
+    let mut result = String::new();
     loop {
         let (new_input, c) = anychar(input)?;
         input = new_input;
 
         if c == '"' {
-            return Ok((input, Value::String(result)));
+            let data = ValueData::String(result);
+            let span = calculate_span(start_input, input);
+
+            return Ok((input, Value { data, span }));
         }
 
         result.push(c);
@@ -227,11 +244,12 @@ fn string(input: &str) -> IResult<Value> {
 }
 
 fn value(input: &str) -> IResult<Value> {
-    alt((string, integer, identifier, sexpr))(input)
+    alt((string, integer, identifier, list))(input)
 }
 
-// FIXME: Show proper error here, not just `Expected ')'`.
-fn sexpr(input: &str) -> IResult<Value> {
+fn list(input: &str) -> IResult<Value> {
+    let start_input = input;
+
     let (mut input, _) = ws!(char('('))(input)?;
 
     let mut contents = Vec::new();
@@ -242,26 +260,45 @@ fn sexpr(input: &str) -> IResult<Value> {
                 contents.push(item);
             }
 
+            // We check if there is a closing parenthesis afterwards so we can report a more
+            // correct error in the case there isn't. If we got an error but we have a ')' it just
+            // means the list is over.
             Err(error) => match ws!(char::<_, ParseError<'_>>(')'))(input) {
-                Ok((input, _)) => return Ok((input, Value::SExpr(contents))),
+                Ok((input, _)) => {
+                    let data = ValueData::List(contents);
+                    let span = calculate_span(start_input, input);
+                    return Ok((input, Value { data, span }));
+                }
+
                 Err(_) => return Err(error),
             },
         }
     }
 }
 
-pub fn parse(filename: &str) -> Result<Value, Vec<Diagnostic>> {
-    // FIXME: better error if filename does not exist
-    let input = std::fs::read_to_string(filename).unwrap();
+pub fn parse(input: &str) -> Result<Value, Vec<Diagnostic>> {
+    fn fix_span(input: &str, value: &mut Value) {
+        value.span = (input.len() - value.span.0, input.len() - value.span.1);
 
-    let error = match sexpr(&input) {
-        Ok(("", value)) => return Ok(value.to_static_lifetime()),
+        if let ValueData::List(ref mut v) = value.data {
+            v.iter_mut().for_each(|v| fix_span(input, v));
+        }
+    }
+
+    let error = match list(&input) {
+        Ok(("", mut value)) => {
+            fix_span(&input, &mut value);
+            return Ok(value.to_static());
+        }
+
         Ok((rest, _)) => ParseError::Custom {
+            context: "EOF",
             input: rest,
             span: 1,
-            context: "EOF",
         },
+
         Err(nom::Err::Error(error)) | Err(nom::Err::Failure(error)) => error,
+
         Err(nom::Err::Incomplete(..)) => unreachable!("only nom::*::complete functions are used"),
     };
 
@@ -269,10 +306,7 @@ pub fn parse(filename: &str) -> Result<Value, Vec<Diagnostic>> {
         let (start, end) = error.span().unwrap();
 
         Diagnostic {
-            input: input.to_owned(),
-            filename: filename.to_owned(),
-            start: input.len() - start,
-            end: input.len() - end,
+            span: (input.len() - start, input.len() - end),
             level: ("error", colorful::Color::Red),
             level_message: Some(error.message().unwrap()),
             below_message: None,
@@ -281,48 +315,8 @@ pub fn parse(filename: &str) -> Result<Value, Vec<Diagnostic>> {
     };
 
     if let ParseError::Or(operands) = error {
-        Err(operands.into_iter().map(to_diagnostic).collect::<Vec<_>>())
+        Err(operands.into_iter().map(to_diagnostic).collect())
     } else {
         Err(vec![to_diagnostic(error)])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        #[test]
-        fn test_identifier(s in "[a-zA-Z]+") {
-            let ("", Value::Identifier(s2)) = identifier(&s).unwrap();
-            prop_assert_eq!(&s2, &s);
-        }
-
-        #[test]
-        #[ignore] // FIXME: take into consideration  integer width!
-        fn test_number(ns in "([0-9]|[1-9][0-9]{0,0})", ss in "[iu](8|16|32|64)") {
-            let ws = ns.clone() + &ss;
-            let (rest, v) = integer(&ws).unwrap();
-
-            prop_assert_eq!(rest, "");
-
-            prop_assert_eq!(ns, if let Value::Integer { value, .. } = v {
-                // FIXME: Properly display negative integers
-                value.to_string()
-            } else {
-                unreachable!()
-            });
-        }
-
-        #[test]
-        fn test_string(s in "[^\"]*") {
-            let wrapped_s = "\"".to_owned() + &s + "\"";
-            if let ("", Value::String(s2)) = string(&wrapped_s).unwrap() {
-                prop_assert_eq!(s2, s);
-            } else {
-                unreachable!()
-            }
-        }
     }
 }

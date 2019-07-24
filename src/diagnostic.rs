@@ -3,16 +3,8 @@
 /// A code diagnostic, such as an error or warning
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
-    /// The input this diagnostic refers to
-    pub input: String,
-
-    pub filename: String,
-
-    /// The character where this diagnostic starts, inclusive
-    pub start: usize,
-
-    /// The character where this diagnostic ends, exclusive
-    pub end: usize,
+    /// The span of this diagnostic
+    pub span: (usize, usize),
 
     /// The level of this diagnostic and its color (e.g. "error", "warning")
     pub level: (&'static str, colorful::Color),
@@ -37,75 +29,69 @@ fn offset_to_position(s: &str, offset: usize) -> (usize, usize) {
     })
 }
 
-impl std::fmt::Display for Diagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Diagnostic {
+    pub fn show(&self, input: &str, filename: &str) {
         use colorful::{Color, Colorful};
 
-        let (row, col) = offset_to_position(&self.input, self.start);
+        let (row, col) = offset_to_position(&input, self.span.0);
 
-        let line = self.input.split("\n").nth(row).expect("line");
+        let line = input.split("\n").nth(row).expect("line");
 
         let indent = (row + 1).to_string().len() + 1;
 
         // header
-        write!(f, "{}", self.level.0.color(self.level.1),)?;
+        print!("{}", self.level.0.color(self.level.1),);
 
         if let Some(ref level_message) = self.level_message {
-            writeln!(f, ": {}", level_message)?;
+            println!(": {}", level_message);
         } else {
-            writeln!(f)?;
+            println!();
         }
 
         // source location
-        writeln!(
-            f,
+        println!(
             "{}{} {}:{}:{}",
             " ".repeat(indent - 1),
             "-->".color(Color::Blue),
-            self.filename,
+            filename,
             row + 1,
             col + 1
-        )?;
+        );
 
         // Above message, currently not supported cause I don't see the use for it
-        writeln!(f, "{}{}", " ".repeat(indent), "|".color(Color::Blue))?;
+        println!("{}{}", " ".repeat(indent), "|".color(Color::Blue));
 
         // code line
-        writeln!(
-            f,
+        println!(
             "{} {} {}",
             (row + 1).to_string().color(Color::Blue),
             "|".color(Color::Blue),
             line
-        )?;
+        );
 
         // bottom context
-        write!(
-            f,
+        print!(
             "{}{}{}{}",
             " ".repeat(indent),
             "|".color(Color::Blue),
             " ".repeat(col + 1),
-            "^".repeat(self.end - self.start).color(Color::Yellow)
-        )?;
+            "^".repeat(self.span.1 - self.span.0).color(Color::Yellow)
+        );
 
         if let Some(below_message) = &self.below_message {
-            writeln!(f, " {}", (below_message as &str).color(Color::Yellow))?;
+            println!(" {}", (below_message as &str).color(Color::Yellow));
         } else {
-            writeln!(f)?;
+            println!();
         }
 
         if let Some(note) = &self.note {
-            writeln!(
-                f,
+            println!(
                 "{}{} {}: {}",
                 " ".repeat(indent),
                 "=".color(Color::Blue),
                 "note".bold(),
                 note
-            )?;
+            );
         }
-
-        Ok(())
     }
 }
