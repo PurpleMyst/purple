@@ -47,7 +47,23 @@ impl From<CompileError> for Diagnostic {
 
 pub type Result<T, E = CompileError> = std::result::Result<T, E>;
 
-macro_rules! expect_variant {
+// XXX: Can we unify `variant!` and `variant_ref!`?
+macro_rules! variant {
+    ($var:expr => $variant:ident) => {{
+        let var = $var;
+        let span = var.span;
+        if let ValueData::$variant(x) = var.data {
+            Ok(x)
+        } else {
+            Err(CompileError {
+                message: concat!("Expected value of type ", stringify!($variant)),
+                span: span,
+            })
+        }
+    }};
+}
+
+macro_rules! variant_ref {
     ($var:expr => $variant:ident) => {{
         let var = $var;
         let span = var.span;
@@ -62,6 +78,7 @@ macro_rules! expect_variant {
     }};
 }
 
+/// Temporarly move a builder into a basic block and restore it at the end of the block
 macro_rules! with_basic_block {
     ($parent:ident.$builder:ident: $temp_basic_block:expr => $body:block) => {{
         let old_block = $parent.$builder.get_insert_block();
@@ -99,10 +116,14 @@ impl<'a> Compiler<'a> {
             })
     }
 
-    fn get_type_from_value(&self, name: &Value<'_>) -> Result<BasicTypeEnum> {
-        // FIXME: handle the same integer types as the parser
-        Ok(match &expect_variant!(name => Identifier)? as &str {
-            "i32" => self.context.i32_type().as_basic_type_enum(),
+    fn parse_typename(&self, name: &Value<'_>) -> Result<ValueType> {
+        Ok(match variant_ref!(name => Identifier)? as &str {
+            // FIXME: handle the same integer types as the parser
+            "i32" => ValueType::Integer {
+                size: 32,
+                signed: true,
+            },
+
             _ => {
                 return Err(CompileError {
                     message: "Unknown type",
@@ -112,46 +133,89 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn compile_function(
-        &mut self,
-        name: &str,
-        parameters: &Value<'a>,
-        return_type: BasicTypeEnum,
-        body: &[Value<'a>],
-    ) -> Result<FunctionValue> {
-        let parameter_types = expect_variant!(parameters => List)?
+    // FIXME: Make `CompileError` take a Cow<str> and make non-shit error messages here.
+    fn check_type(&self, ty: ValueType, value: &mut Value) -> Result<()> {
+        // If the two types are equal, then we're fine
+        if Some(ty) == value.ty {
+            return Ok(());
+        }
+
+        // If the value has no type, we must infer it
+        if value.ty.is_none() {
+            if let ValueData::Integer(_) = value.data {
+                value.ty = Some(ty);
+                Ok(())
+            } else {
+                Err(CompileError {
+                    message: "Could not infer type",
+                    span: value.span,
+                })
+            }
+        } else {
+            Err(CompileError {
+                message: "Wrong type",
+                span: value.span,
+            })
+        }
+    }
+
+    fn to_llvm_type(&self, ty: ValueType) -> BasicTypeEnum {
+        match ty {
+            ValueType::Integer { size, .. } => self
+                .context
+                .custom_width_int_type(size)
+                .as_basic_type_enum(),
+
+            _ => unimplemented!("to_llvm_type({:?})", ty),
+        }
+    }
+
+    fn compile_function(&mut self, mut value: Vec<Value<'a>>) -> Result<FunctionValue> {
+        assert_eq!(variant!(value.remove(0) => Identifier)?, "function");
+
+        let name = variant!(value.remove(0) => Identifier)?;
+        let parameters = value.remove(0);
+        let return_type = self.parse_typename(&value.remove(0))?;
+        let mut body = value;
+
+        let parameter_types = variant_ref!(&parameters => List)?
             .iter()
             .map(|sexpr| {
-                self.get_type_from_value(expect_variant!(sexpr => List)?.get(0).ok_or_else(
-                    || CompileError {
+                self.parse_typename(variant_ref!(sexpr => List)?.get(0).ok_or_else(|| {
+                    CompileError {
                         message:
                             "Expected a two-length list containing the type and the argument name",
                         span: sexpr.span,
-                    },
-                )?)
+                    }
+                })?)
+                .map(|ty| self.to_llvm_type(ty))
             })
             .collect::<Result<Vec<BasicTypeEnum>>>()?;
 
-        let function_type = return_type.fn_type(&parameter_types, /*is_var_args:*/ false);
+        let function_type = self
+            .to_llvm_type(return_type)
+            .fn_type(&parameter_types, /*is_var_args:*/ false);
+
         let function = self
             .module
-            .add_function(name, function_type, /*linkage:*/ None);
+            .add_function(&name, function_type, /*linkage:*/ None);
 
         let entry_block = self.context.append_basic_block(&function, "entry");
 
         // FIXME: create a new frame + assign the arguments
-        if !expect_variant!(parameters => List)?.is_empty() {
+        if !variant_ref!(&parameters => List)?.is_empty() {
             return Err(CompileError {
                 message: "Parameters are not supported yet",
                 span: parameters.span,
             });
         }
 
-        with_basic_block!(self.builder: entry_block => {
-            let body_values = body.into_iter().cloned().map(|v| self.compile(v)).collect::<Result<Vec<BasicValueEnum>>>()?;
-            let return_value = body_values.last();
+        // FIXME: proper error
+        self.check_type(return_type.clone(), body.last_mut().unwrap())?;
 
-            // FIXME: check the type of the return value
+        with_basic_block!(self.builder: entry_block => {
+            let body_values = body.into_iter().map(|v| self.compile(v.clone())).collect::<Result<Vec<BasicValueEnum>>>()?;
+            let return_value = body_values.last();
 
             self.builder.build_return(return_value.map(|v| v as _));
         });
@@ -160,25 +224,14 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_sexpr(&mut self, sexpr: Vec<Value<'a>>) -> Result<BasicValueEnum> {
-        let first_ident: &str = expect_variant!(sexpr.get(0).unwrap() => Identifier)?.as_ref();
+        let first_ident: &str = variant_ref!(sexpr.get(0).unwrap() => Identifier)?.as_ref();
 
         Ok(match first_ident {
-            "function" => {
-                let name = sexpr.get(1).unwrap();
-                let parameters = sexpr.get(2).unwrap();
-                let return_type = sexpr.get(3).unwrap();
-                let body = &sexpr[4..];
-
-                self.compile_function(
-                    &expect_variant!(name => Identifier)?,
-                    &parameters,
-                    self.get_type_from_value(return_type)?,
-                    body,
-                )?
+            "function" => self
+                .compile_function(sexpr)?
                 .as_global_value()
                 .as_pointer_value()
-                .as_basic_value_enum()
-            }
+                .as_basic_value_enum(),
 
             _ => unimplemented!(),
         })

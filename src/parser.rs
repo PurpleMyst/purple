@@ -4,8 +4,9 @@ use nom::{
     branch::alt,
     bytes::complete::take_while,
     character::complete::{anychar, char, digit1, multispace0, one_of},
+    combinator::opt,
     error::ErrorKind,
-    sequence::delimited,
+    sequence::{delimited, tuple},
 };
 
 use crate::{
@@ -172,7 +173,7 @@ fn identifier(input: &str) -> IResult<Value> {
 
 fn integer_sign(input: &str) -> IResult<bool> {
     let (new_input, signed) = one_of::<_, _, ParseError>("iu")(input)
-        .map_err(|_| ParseError::expected_unrecoverable("either 'i' or 'u'", input, 1))?;
+        .map_err(|_| ParseError::expected("either 'i' or 'u'", input, 1))?;
 
     Ok((
         new_input,
@@ -209,12 +210,10 @@ fn integer(input: &str) -> IResult<Value> {
         .map(|(input, s)| (input, s.parse().unwrap()))
         .map_err(|_| ParseError::expected("an integer", input, 1))?;
 
-    let (input, signed) = integer_sign(input)?;
-
-    let (input, size) = integer_size(input)?;
+    let (input, ty) = opt(tuple((integer_sign, integer_size)))(input)?;
+    let ty = ty.map(|(signed, size)| ValueType::Integer { signed, size });
 
     let data = ValueData::Integer(value);
-    let ty = Some(ValueType::Integer { signed, size });
     let span = calculate_span(start_input, input);
 
     Ok((input, Value { data, ty, span }))

@@ -11,7 +11,7 @@ pub enum ValueData<'a> {
     List(Vec<Value<'a>>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueType {
     Integer { size: u32, signed: bool },
     Identifier,
