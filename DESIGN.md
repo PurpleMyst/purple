@@ -15,36 +15,68 @@ This language has a few design goals:
 - Safety. It should be hard to shoot yourself in the foot.
 - Performant functional programming
 
-## Language
+## Parser
 
-The current syntax is very basic; There exist the following values:
+The parser is a basic `nom` parser with some error-handling stuff hand-rolled
+on top of it. It's actually so hand-rolled that I'm thinking of just
+hand-rolling the whole parser.
 
-- `Value::U64(u64)` → 64-bit integer
-- `Value::Identifier(&'_ str)` → identifier, refers to variables, right now
-  just alphabetical characters
-- `Value::String(String)` → strings! no escapes supported just yet
-- `Value::SExpr(Vec<Value<'_>>)` → s expressions, not much to see here: `(a b)`
+The parser supports the following constructs:
+- Identifiers, which may start with any of `[a-zA-Z_-]` and continue with any
+  of the former plus `[0-9]`.
+- Numbers, which are comprised of characters `[0-9]` and can have a type
+  specified right afterwards, the type being `[iu](\d+)`, and supporting any
+  integer size between `1` and `64`, including odd sizes like `37`.
+- Strings, which are any character except `"` between `"`. Escapes are not
+  currently supported.
+- Lists, which are sequences of other values between parenthesis. They are
+  allowed to be heterogeneous
 
-## Ideas
+## Value
 
-### define
+A value is a struct containing three fields:
+1. `data`, representing basically a parsed version of whatever the user typed.
+   This contains the string's contents, or the number's digits, etc...
+2. `ty`, representing the type of the value. This can be present or can be not
+   present. If it's not present, the value's type must be inferred from the
+   context.
+3. `span`, a `(usize, usize)` representing the portion of the input which this
+   values take sup
 
-Used to assign variables, but they can only be assigne donce
+## Compiler
 
-- `(define $lhs:Identifier $rhs:Value)` → Assign `$lhs` to `$rhs`, type is
-  inferred from `$rhs`
+The Compiler is a very simple beast. It creates a LLVM Context, Builder and
+Module upon instanciation.
 
-### lambda
+Compilation happens value-by-value, and each value type is compiled in the
+following manner
+- Identifiers are thought of as variables, looked up in what is known as the
+  frame stack, going from the latest frame (first in the array) to the oldest
+  frame (last in the array). The frame stack top is the beginning of the array
+  so the iteration order is correct.
+- Integers are compiled as simple LLVM integers, and the distinction between
+  signed and unsigned is a bit lost in compilation.
+- Strings are compiled as constant LLVM strings. Mutable strings are not
+  supported yet, I guess.
+- Lists are compiled based on their head
+    1. If the list head is `Identifier("function")`, a function definition is
+       created in the global context. (note: closures are not supported yet). A
+       function definition takes the form of `(function NAME
+       ((PARAM_TYPE PARAM)*) RETURN_TYPE BODY*)`. While parameters are not currently
+       supported, the idea is that a new frame will be created where the
+       arguments are assigned to variables. There is no support for Function
+       values currently, but there will be in the future..
+    2. In any other case, nothing is supported yet.
 
-Used to create anonymous functions
+### Type Checking and Inference
 
-- `(lambda (($arg_ty:Identifier $arg:Identifier)*) $ret_ty:Identifier $body:Value*)`
+Type inference, while not currently implemented, will be implemented following
+a few dumb rules.
 
-Example: `(lambda ((u64 x)) u64 (* 2 x))`
+1. In a `function`, the last value must be of the type named in the function
+   definition. This is useful for type inference of integer values in functions
+   such as `main`
+2. In a `define`, the right-hand-side's type must be assignable to the
+   left-hand-side. The exact semantics of the preceding statement have not been
+   worked out yet, such as how references are going to work et cetera.
 
-### function
-
-Same as lambda, except there is a `$name:String` argument. This must be used to
-define `main`.
-
-Example: `(function main () u32 0)`
