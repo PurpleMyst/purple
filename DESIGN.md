@@ -21,62 +21,130 @@ The parser is a basic `nom` parser with some error-handling stuff hand-rolled
 on top of it. It's actually so hand-rolled that I'm thinking of just
 hand-rolling the whole parser.
 
-The parser supports the following constructs:
-- Identifiers, which may start with any of `[a-zA-Z_-]` and continue with any
-  of the former plus `[0-9]`.
-- Numbers, which are comprised of characters `[0-9]` and can have a type
-  specified right afterwards, the type being `[iu](\d+)`, and supporting any
-  integer size between `1` and `64`, including odd sizes like `37`.
-- Strings, which are any character except `"` between `"`. Escapes are not
-  currently supported.
-- Lists, which are sequences of other values between parenthesis. They are
-  allowed to be heterogeneous
+### Identifier
+
+
+Identifiers may start with any of `[a-zA-Z_-]` and continue with any
+of the former plus `[0-9]`.
+
+Examples:
+1. `foobar`
+2. `-`
+3. `foo+bar`
+4. `_hello_i_am_dunder_`
+5. `my-favorite-number-is-2+2`
+
+### Integer
+
+They are comprised of characters `[0-9]`.
+
+They can be signed or unsigned.
+
+They can have any size between 1 and 64.
+
+Their size can be specified after their value or it can be inferred from
+context.
+
+Examples:
+1. `0`
+2. `42`
+3. `42i32`
+4. `42i42`
+5. `37u21`
+
+### String
+
+Strings consist of any character except `"` inside a pair of `"`.
+
+No escapes are currently supported.
+
+Examples:
+1. `""`
+2. `"hello, world"`
+3. `"ùnìcòdè is s↑pported"`
+
+### List
+
+Lists are made up of any amount of values, even zero, inside parenthesis.
+
+They can be heterogenous.
+
+Examples:
+1. `()`
+2. `(function main () i32 0)`
+3. `((i love) (nested lists) 300)`
 
 ## Value
 
 A value is a struct containing three fields:
-1. `data`, representing basically a parsed version of whatever the user typed.
-   This contains the string's contents, or the number's digits, etc...
-2. `ty`, representing the type of the value. This can be present or can be not
-   present. If it's not present, the value's type must be inferred from the
-   context.
-3. `span`, a `(usize, usize)` representing the portion of the input which this
-   values take sup
+1. `data`, containing what you might expect: A string content, an integer
+   value, etc...
+2. `ty`, representing the type of the value. This field is optional and will be
+   inferred from context if not present.
+3. `span`, which is the range of the input text which this value was parsed
+   from. This is left-inclusive and right-exclusive.
+
+Examples:
+1. `Value { data: ValueData::Integer(0), ty: None, span: (0, 1) }`
+2. `Value { data: ValueData::Integer(42), ty: Some(ValueType::Integer { size:
+   32, signed: false }), span: (0, 2) }`
 
 ## Compiler
 
 The Compiler is a very simple beast. It creates a LLVM Context, Builder and
 Module upon instanciation.
 
-Compilation happens value-by-value, and each value type is compiled in the
-following manner
-- Identifiers are thought of as variables, looked up in what is known as the
-  frame stack, going from the latest frame (first in the array) to the oldest
-  frame (last in the array). The frame stack top is the beginning of the array
-  so the iteration order is correct.
-- Integers are compiled as simple LLVM integers, and the distinction between
-  signed and unsigned is a bit lost in compilation.
-- Strings are compiled as constant LLVM strings. Mutable strings are not
-  supported yet, I guess.
-- Lists are compiled based on their head
-    1. If the list head is `Identifier("function")`, a function definition is
-       created in the global context. (note: closures are not supported yet). A
-       function definition takes the form of `(function NAME
-       ((PARAM_TYPE PARAM)*) RETURN_TYPE BODY*)`. While parameters are not currently
-       supported, the idea is that a new frame will be created where the
-       arguments are assigned to variables. There is no support for Function
-       values currently, but there will be in the future..
-    2. In any other case, nothing is supported yet.
+### Frames
 
-### Type Checking and Inference
+The Compiler contains internally a stack of `Frame`s, whose top value is the
+first element of a `VecDeque<Frame>`.
 
-Type inference, while not currently implemented, will be implemented following
-a few dumb rules.
+Each `Frame` contains information about the current context being compiled,
+such as variables currently defined in the scope.
 
-1. In a `function`, the last value must be of the type named in the function
-   definition. This is useful for type inference of integer values in functions
-   such as `main`
-2. In a `define`, the right-hand-side's type must be assignable to the
-   left-hand-side. The exact semantics of the preceding statement have not been
-   worked out yet, such as how references are going to work et cetera.
+For now, a new frame is created for every function.
 
+### Identifier
+
+Identifiers are compiled by looking up the corresponding variable in the frame
+stack. Simple enough.
+
+### Integer
+
+Integers are compiled as LLVM integers.
+
+### String
+
+Integers are compiled as LLVM strings.
+
+### List
+
+Lists are compiled following this set of rules:
+
+### function
+
+If the head of the list is an Identifier with the contents `"function"`, a
+new function definition is created in the global scope.
+
+There exists no support for capturing variables (yet).
+
+A function definition looks like this: `(function NAME ((PARAM_TYPE
+PARAM_NAME)*) RETURN_TYPE BODY*)`
+
+Type checking for a function definition involves checking that the last
+expression in the body, which is the one that is returned by the function and
+whill henceforth be referred to as the return value, has the type specified
+in the function definition.
+
+While type checking, if the return value has the data for an integer but no
+type specified, and the function's return value is an integer type (e.g. `i32`,
+`u64`, `i33`), the return value's type is set to the function's return value.
+This allows definitions such as `(function main () i32 0)` to not re-state the
+integer size.
+
+Examples:
+1. `(function main () i32 0)`
+
+### otherwise
+
+Otherwise, nothing is currently compiled and the compiler errors out.
