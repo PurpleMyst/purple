@@ -133,7 +133,7 @@ PARAM_NAME)*) RETURN_TYPE BODY*)`
 
 Type checking for a function definition involves checking that the last
 expression in the body, which is the one that is returned by the function and
-whill henceforth be referred to as the return value, has the type specified
+will henceforth be referred to as the return value, has the type specified
 in the function definition.
 
 While type checking, if the return value has the data for an integer but no
