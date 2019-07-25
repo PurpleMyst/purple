@@ -10,7 +10,7 @@ use inkwell::{
 
 use crate::{
     diagnostic::Diagnostic,
-    value::{IntegerType, Value, ValueData},
+    value::{Value, ValueData, ValueType},
 };
 
 #[derive(Default, Debug)]
@@ -179,24 +179,57 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn compile(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
-        Ok(match value.data {
-            ValueData::Integer {
-                value,
-                ty: IntegerType { size, signed },
+        Ok(match value {
+            Value {
+                data: ValueData::Integer(value),
+                ty: Some(ValueType::Integer { size, signed }),
+                ..
             } => self
                 .context
                 .custom_width_int_type(size)
                 .const_int(value, signed)
                 .as_basic_value_enum(),
 
-            ValueData::String(s) => self
+            Value {
+                data: ValueData::Integer(_),
+                ty: Some(_),
+                span,
+            } => {
+                return Err(CompileError {
+                    // TODO: make a better error message, even though it's probably unreachable
+                    message: "The type of this integer value makes no sense",
+                    span,
+                });
+            }
+
+            Value {
+                data: ValueData::Integer(_),
+                ty: None,
+                span,
+            } => {
+                return Err(CompileError {
+                    message: "Could not infer type for integer value",
+                    span,
+                })
+            }
+
+            Value {
+                data: ValueData::String(s),
+                ..
+            } => self
                 .context
                 .const_string(&s, /*null_terminated:*/ false)
                 .as_basic_value_enum(),
 
-            ValueData::Identifier(s) => self.compile_identifier(s.as_ref(), value.span)?,
+            Value {
+                data: ValueData::Identifier(s),
+                ..
+            } => self.compile_identifier(s.as_ref(), value.span)?,
 
-            ValueData::List(v) => self.compile_sexpr(v)?,
+            Value {
+                data: ValueData::List(v),
+                ..
+            } => self.compile_sexpr(v)?,
         })
     }
 }

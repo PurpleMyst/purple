@@ -1,3 +1,3 @@
-(function main("hello, this is a long span test") i32
-    zero
+(function main() i32
+    0i32
 )

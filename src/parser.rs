@@ -10,7 +10,7 @@ use nom::{
 
 use crate::{
     diagnostic::Diagnostic,
-    value::{IntegerType, Value, ValueData},
+    value::{Value, ValueData, ValueType},
 };
 
 #[derive(Debug)]
@@ -164,9 +164,10 @@ fn identifier(input: &str) -> IResult<Value> {
     let (input, ident) = take_while(|c| IDENTIFIER_CHARACTERS.contains(c))(input)?;
 
     let data = ValueData::Identifier(Cow::Borrowed(ident));
+    let ty = Some(ValueType::Identifier);
     let span = calculate_span(start_input, input);
 
-    Ok((input, Value { data, span }))
+    Ok((input, Value { data, ty, span }))
 }
 
 fn integer_sign(input: &str) -> IResult<bool> {
@@ -212,13 +213,11 @@ fn integer(input: &str) -> IResult<Value> {
 
     let (input, size) = integer_size(input)?;
 
-    let data = ValueData::Integer {
-        value,
-        ty: IntegerType { signed, size },
-    };
+    let data = ValueData::Integer(value);
+    let ty = Some(ValueType::Integer { signed, size });
     let span = calculate_span(start_input, input);
 
-    Ok((input, Value { data, span }))
+    Ok((input, Value { data, ty, span }))
 }
 
 fn string(input: &str) -> IResult<Value> {
@@ -234,9 +233,10 @@ fn string(input: &str) -> IResult<Value> {
 
         if c == '"' {
             let data = ValueData::String(result);
+            let ty = Some(ValueType::String);
             let span = calculate_span(start_input, input);
 
-            return Ok((input, Value { data, span }));
+            return Ok((input, Value { data, ty, span }));
         }
 
         result.push(c);
@@ -266,8 +266,9 @@ fn list(input: &str) -> IResult<Value> {
             Err(error) => match ws!(char::<_, ParseError<'_>>(')'))(input) {
                 Ok((input, _)) => {
                     let data = ValueData::List(contents);
+                    let ty = Some(ValueType::List);
                     let span = calculate_span(start_input, input);
-                    return Ok((input, Value { data, span }));
+                    return Ok((input, Value { data, ty, span }));
                 }
 
                 Err(_) => return Err(error),
