@@ -115,11 +115,11 @@ impl<'a> Compiler<'a> {
     fn compile_function(
         &mut self,
         name: &str,
-        parameters: &[Value<'a>],
+        parameters: &Value<'a>,
         return_type: BasicTypeEnum,
         body: &[Value<'a>],
     ) -> Result<FunctionValue> {
-        let parameter_types = parameters
+        let parameter_types = expect_variant!(parameters => List)?
             .iter()
             .map(|sexpr| {
                 self.get_type_from_value(expect_variant!(sexpr => List)?.get(0).ok_or_else(
@@ -140,6 +140,12 @@ impl<'a> Compiler<'a> {
         let entry_block = self.context.append_basic_block(&function, "entry");
 
         // FIXME: create a new frame + assign the arguments
+        if !expect_variant!(parameters => List)?.is_empty() {
+            return Err(CompileError {
+                message: "Parameters are not supported yet",
+                span: parameters.span,
+            });
+        }
 
         with_basic_block!(self.builder: entry_block => {
             let body_values = body.into_iter().cloned().map(|v| self.compile(v)).collect::<Result<Vec<BasicValueEnum>>>()?;
@@ -165,7 +171,7 @@ impl<'a> Compiler<'a> {
 
                 self.compile_function(
                     &expect_variant!(name => Identifier)?,
-                    expect_variant!(parameters => List)?.as_slice(),
+                    &parameters,
                     self.get_type_from_value(return_type)?,
                     body,
                 )?
