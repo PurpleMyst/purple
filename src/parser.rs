@@ -165,7 +165,7 @@ fn identifier(input: &str) -> IResult<Value> {
     let (input, ident) = take_while(|c| IDENTIFIER_CHARACTERS.contains(c))(input)?;
 
     let data = ValueData::Identifier(Cow::Borrowed(ident));
-    let ty = Some(ValueType::Identifier);
+    let ty = ValueType::Identifier;
     let span = calculate_span(start_input, input);
 
     Ok((input, Value { data, ty, span }))
@@ -210,10 +210,14 @@ fn integer(input: &str) -> IResult<Value> {
         .map(|(input, s)| (input, s.parse().unwrap()))
         .map_err(|_| ParseError::expected("an integer", input, 1))?;
 
-    let (input, ty) = opt(tuple((integer_sign, integer_size)))(input)?;
-    let ty = ty.map(|(signed, size)| ValueType::Integer { signed, size });
+    let (input, signed) = opt(integer_sign)(input)?;
+
+    let (input, size) = opt(integer_size)(input)?;
+
+    assert_eq!(signed.is_none(), size.is_none());
 
     let data = ValueData::Integer(value);
+    let ty = ValueType::Integer { signed, size };
     let span = calculate_span(start_input, input);
 
     Ok((input, Value { data, ty, span }))
@@ -232,7 +236,7 @@ fn string(input: &str) -> IResult<Value> {
 
         if c == '"' {
             let data = ValueData::String(result);
-            let ty = Some(ValueType::String);
+            let ty = ValueType::String;
             let span = calculate_span(start_input, input);
 
             return Ok((input, Value { data, ty, span }));
@@ -265,7 +269,7 @@ fn list(input: &str) -> IResult<Value> {
             Err(error) => match ws!(char::<_, ParseError<'_>>(')'))(input) {
                 Ok((input, _)) => {
                     let data = ValueData::List(contents);
-                    let ty = Some(ValueType::List);
+                    let ty = ValueType::List;
                     let span = calculate_span(start_input, input);
                     return Ok((input, Value { data, ty, span }));
                 }

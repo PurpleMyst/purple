@@ -13,7 +13,10 @@ pub enum ValueData<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueType {
-    Integer { size: u32, signed: bool },
+    Integer {
+        size: Option<u32>,
+        signed: Option<bool>,
+    },
     Identifier,
     String,
     List,
@@ -22,7 +25,7 @@ pub enum ValueType {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Value<'a> {
     pub data: ValueData<'a>,
-    pub ty: Option<ValueType>,
+    pub ty: ValueType,
     pub span: (usize, usize),
 }
 

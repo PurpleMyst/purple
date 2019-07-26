@@ -98,8 +98,8 @@ impl<'a> Compiler<'a> {
         Ok(match variant_ref!(name => Identifier)? as &str {
             // FIXME: handle the same integer types as the parser
             "i32" => ValueType::Integer {
-                size: 32,
-                signed: true,
+                size: Some(32),
+                signed: Some(true),
             },
 
             ident => {
@@ -110,29 +110,14 @@ impl<'a> Compiler<'a> {
     }
 
     fn check_type(&self, ty: ValueType, value: &mut Value) -> Result<()> {
-        // If the two types are equal, then we're fine
-        if Some(ty) == value.ty {
-            return Ok(());
-        }
-
-        // If the value has no type, we must infer it
-        if value.ty.is_none() {
-            if let ValueData::Integer(_) = value.data {
-                value.ty = Some(ty);
-                Ok(())
-            } else {
-                Err(Diagnostic::new(("error", colorful::Color::Red), value.span)
-                    .level_message("Could not infer type".to_owned()))
-            }
-        } else {
-            Err(Diagnostic::new(("error", colorful::Color::Red), value.span)
-                .level_message(format!("Expected type {:?}, found {:?}", ty, value.ty)))
-        }
+        unimplemented!("TODO")
     }
 
     fn to_llvm_type(&self, ty: ValueType) -> BasicTypeEnum {
         match ty {
-            ValueType::Integer { size, .. } => self
+            ValueType::Integer {
+                size: Some(size), ..
+            } => self
                 .context
                 .custom_width_int_type(size)
                 .as_basic_type_enum(),
@@ -211,7 +196,11 @@ impl<'a> Compiler<'a> {
         Ok(match value {
             Value {
                 data: ValueData::Integer(value),
-                ty: Some(ValueType::Integer { size, signed }),
+                ty:
+                    ValueType::Integer {
+                        size: Some(size),
+                        signed: Some(signed),
+                    },
                 ..
             } => self
                 .context
@@ -221,18 +210,8 @@ impl<'a> Compiler<'a> {
 
             Value {
                 data: ValueData::Integer(_),
-                ty: Some(_),
                 span,
-            } => {
-                // TODO: make a better error message, even though it's probably unreachable
-                return Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                    .level_message("The type of this integer value makes no sense".to_owned()));
-            }
-
-            Value {
-                data: ValueData::Integer(_),
-                ty: None,
-                span,
+                ..
             } => {
                 return Err(Diagnostic::new(("error", colorful::Color::Red), span)
                     .level_message("Could not infer type for integer value".to_owned()))
