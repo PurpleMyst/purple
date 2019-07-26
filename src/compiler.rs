@@ -27,21 +27,7 @@ pub struct Compiler<'a> {
     frames: VecDeque<Frame<'a>>,
 }
 
-// TODO: Just replace this with Diagnostic
-#[derive(Debug)]
-pub struct CompileError {
-    message: &'static str,
-    span: (usize, usize),
-}
-
-impl From<CompileError> for Diagnostic {
-    fn from(error: CompileError) -> Diagnostic {
-        Diagnostic::new(("error", colorful::Color::Red), error.span)
-            .level_message(error.message.to_owned())
-    }
-}
-
-pub type Result<T, E = CompileError> = std::result::Result<T, E>;
+pub type Result<T, E = Diagnostic> = std::result::Result<T, E>;
 
 // XXX: Can we unify `variant!` and `variant_ref!`?
 macro_rules! variant {
@@ -51,10 +37,8 @@ macro_rules! variant {
         if let ValueData::$variant(x) = var.data {
             Ok(x)
         } else {
-            Err(CompileError {
-                message: concat!("Expected value of type ", stringify!($variant)),
-                span: span,
-            })
+            Err(Diagnostic::new(("error", colorful::Color::Red), span)
+                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
         }
     }};
 }
@@ -66,10 +50,8 @@ macro_rules! variant_ref {
         if let ValueData::$variant(ref x) = var.data {
             Ok(x)
         } else {
-            Err(CompileError {
-                message: concat!("Expected value of type ", stringify!($variant)),
-                span: span,
-            })
+            Err(Diagnostic::new(("error", colorful::Color::Red), span)
+                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
         }
     }};
 }
@@ -106,9 +88,9 @@ impl<'a> Compiler<'a> {
             .iter()
             .find_map(|frame| frame.variables.get(ident))
             .map(|value| value.as_basic_value_enum())
-            .ok_or_else(|| CompileError {
-                message: "Undefined variable",
-                span,
+            .ok_or_else(|| {
+                Diagnostic::new(("error", colorful::Color::Red), span)
+                    .level_message(format!("Undefined variable {:?}", ident))
             })
     }
 
@@ -120,16 +102,13 @@ impl<'a> Compiler<'a> {
                 signed: true,
             },
 
-            _ => {
-                return Err(CompileError {
-                    message: "Unknown type",
-                    span: name.span,
-                })
+            ident => {
+                return Err(Diagnostic::new(("error", colorful::Color::Red), name.span)
+                    .level_message(format!("Unknown type {}", ident)));
             }
         })
     }
 
-    // FIXME: Make `CompileError` take a Cow<str> and make non-shit error messages here.
     fn check_type(&self, ty: ValueType, value: &mut Value) -> Result<()> {
         // If the two types are equal, then we're fine
         if Some(ty) == value.ty {
@@ -142,16 +121,12 @@ impl<'a> Compiler<'a> {
                 value.ty = Some(ty);
                 Ok(())
             } else {
-                Err(CompileError {
-                    message: "Could not infer type",
-                    span: value.span,
-                })
+                Err(Diagnostic::new(("error", colorful::Color::Red), value.span)
+                    .level_message("Could not infer type".to_owned()))
             }
         } else {
-            Err(CompileError {
-                message: "Wrong type",
-                span: value.span,
-            })
+            Err(Diagnostic::new(("error", colorful::Color::Red), value.span)
+                .level_message(format!("Expected type {:?}, found {:?}", ty, value.ty)))
         }
     }
 
@@ -178,11 +153,10 @@ impl<'a> Compiler<'a> {
             .iter()
             .map(|sexpr| {
                 self.parse_typename(variant_ref!(sexpr => List)?.get(0).ok_or_else(|| {
-                    CompileError {
-                        message:
-                            "Expected a two-length list containing the type and the argument name",
-                        span: sexpr.span,
-                    }
+                    Diagnostic::new(("error", colorful::Color::Red), sexpr.span).level_message(
+                        "Expected a two-length list containing the type and the argument name"
+                            .to_owned(),
+                    )
                 })?)
                 .map(|ty| self.to_llvm_type(ty))
             })
@@ -200,10 +174,10 @@ impl<'a> Compiler<'a> {
 
         // FIXME: create a new frame + assign the arguments
         if !variant_ref!(&parameters => List)?.is_empty() {
-            return Err(CompileError {
-                message: "Parameters are not supported yet",
-                span: parameters.span,
-            });
+            return Err(
+                Diagnostic::new(("error", colorful::Color::Red), parameters.span)
+                    .level_message("Parameters are not supported yet".to_owned()),
+            );
         }
 
         // FIXME: proper error
@@ -250,11 +224,9 @@ impl<'a> Compiler<'a> {
                 ty: Some(_),
                 span,
             } => {
-                return Err(CompileError {
-                    // TODO: make a better error message, even though it's probably unreachable
-                    message: "The type of this integer value makes no sense",
-                    span,
-                });
+                // TODO: make a better error message, even though it's probably unreachable
+                return Err(Diagnostic::new(("error", colorful::Color::Red), span)
+                    .level_message("The type of this integer value makes no sense".to_owned()));
             }
 
             Value {
@@ -262,10 +234,8 @@ impl<'a> Compiler<'a> {
                 ty: None,
                 span,
             } => {
-                return Err(CompileError {
-                    message: "Could not infer type for integer value",
-                    span,
-                })
+                return Err(Diagnostic::new(("error", colorful::Color::Red), span)
+                    .level_message("Could not infer type for integer value".to_owned()))
             }
 
             Value {
