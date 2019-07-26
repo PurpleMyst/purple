@@ -29,7 +29,34 @@ fn offset_to_position(s: &str, offset: usize) -> (usize, usize) {
     })
 }
 
+macro_rules! builder_method {
+    ($($name:ident: $ty:ty),*) => {
+        $(
+        #[allow(dead_code)]
+        pub fn $name(self, $name: $ty) -> Self {
+            assert!(self.$name.is_none());
+            Self {
+                $name: Some($name),
+                ..self
+            }
+        }
+        )*
+    }
+}
+
 impl Diagnostic {
+    pub fn new(level: (&'static str, colorful::Color), span: (usize, usize)) -> Self {
+        Self {
+            level,
+            span,
+            below_message: None,
+            level_message: None,
+            note: None,
+        }
+    }
+
+    builder_method!(level_message: String, below_message: String, note: String);
+
     pub fn show(&self, input: &str, filename: &str) {
         use colorful::{Color, Colorful};
 

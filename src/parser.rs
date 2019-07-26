@@ -305,13 +305,11 @@ pub fn parse(input: &str) -> Result<Value, Vec<Diagnostic>> {
     let to_diagnostic = |error: ParseError| {
         let (start, end) = error.span().unwrap();
 
-        Diagnostic {
-            span: (input.len() - start, input.len() - end),
-            level: ("error", colorful::Color::Red),
-            level_message: Some(error.message().unwrap()),
-            below_message: None,
-            note: None,
-        }
+        Diagnostic::new(
+            ("error", colorful::Color::Red),
+            (input.len() - start, input.len() - end),
+        )
+        .level_message(error.message().unwrap())
     };
 
     if let ParseError::Or(operands) = error {

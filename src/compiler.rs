@@ -27,6 +27,7 @@ pub struct Compiler<'a> {
     frames: VecDeque<Frame<'a>>,
 }
 
+// TODO: Just replace this with Diagnostic
 #[derive(Debug)]
 pub struct CompileError {
     message: &'static str,
@@ -35,13 +36,8 @@ pub struct CompileError {
 
 impl From<CompileError> for Diagnostic {
     fn from(error: CompileError) -> Diagnostic {
-        Diagnostic {
-            span: error.span,
-            level: ("error", colorful::Color::Red),
-            level_message: Some(error.message.to_owned()),
-            below_message: None,
-            note: None,
-        }
+        Diagnostic::new(("error", colorful::Color::Red), error.span)
+            .level_message(error.message.to_owned())
     }
 }
 
