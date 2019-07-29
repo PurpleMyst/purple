@@ -164,7 +164,7 @@ fn identifier(input: &str) -> IResult<Value> {
 
     let (input, ident) = take_while(|c| IDENTIFIER_CHARACTERS.contains(c))(input)?;
 
-    let data = ValueData::Identifier(Cow::Borrowed(ident));
+    let data = ValueData::Identifier(ident);
     let ty = ValueType::Identifier;
     let span = calculate_span(start_input, input);
 
@@ -280,7 +280,7 @@ fn list(input: &str) -> IResult<Value> {
     }
 }
 
-pub fn parse(input: &str) -> Result<Value, Vec<Diagnostic>> {
+pub fn parse<'a>(input: &'a str) -> Result<Value<'a>, Vec<Diagnostic>> {
     fn fix_span(input: &str, value: &mut Value) {
         value.span = (input.len() - value.span.0, input.len() - value.span.1);
 
@@ -292,7 +292,7 @@ pub fn parse(input: &str) -> Result<Value, Vec<Diagnostic>> {
     let error = match list(&input) {
         Ok(("", mut value)) => {
             fix_span(&input, &mut value);
-            return Ok(value.to_static());
+            return Ok(value);
         }
 
         Ok((rest, _)) => ParseError::Custom {

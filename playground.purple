@@ -1,3 +1,9 @@
-(function main() i32
-    0
+(begin
+    (function zero() i32
+        0
+    )
+
+    (function main() i32
+        (zero)
+    )
 )

@@ -29,33 +29,6 @@ pub struct Compiler<'a> {
 
 pub type Result<T, E = Diagnostic> = std::result::Result<T, E>;
 
-// XXX: Can we unify `variant!` and `variant_ref!`?
-macro_rules! variant {
-    ($var:expr => $variant:ident) => {{
-        let var = $var;
-        let span = var.span;
-        if let ValueData::$variant(x) = var.data {
-            Ok(x)
-        } else {
-            Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
-        }
-    }};
-}
-
-macro_rules! variant_ref {
-    ($var:expr => $variant:ident) => {{
-        let var = $var;
-        let span = var.span;
-        if let ValueData::$variant(ref x) = var.data {
-            Ok(x)
-        } else {
-            Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
-        }
-    }};
-}
-
 /// Temporarly move a builder into a basic block and restore it at the end of the block
 macro_rules! with_basic_block {
     ($parent:ident.$builder:ident: $temp_basic_block:expr => $body:block) => {{
@@ -107,10 +80,6 @@ impl<'a> Compiler<'a> {
                     .level_message(format!("Unknown type {}", ident)));
             }
         })
-    }
-
-    fn check_type(&self, ty: ValueType, value: &mut Value) -> Result<()> {
-        unimplemented!("TODO")
     }
 
     fn to_llvm_type(&self, ty: ValueType) -> BasicTypeEnum {
@@ -165,9 +134,6 @@ impl<'a> Compiler<'a> {
             );
         }
 
-        // FIXME: proper error
-        self.check_type(return_type.clone(), body.last_mut().unwrap())?;
-
         with_basic_block!(self.builder: entry_block => {
             let body_values = body.into_iter().map(|v| self.compile(v.clone())).collect::<Result<Vec<BasicValueEnum>>>()?;
             let return_value = body_values.last();
@@ -207,6 +173,15 @@ impl<'a> Compiler<'a> {
                 .custom_width_int_type(size)
                 .const_int(value, signed)
                 .as_basic_value_enum(),
+
+            Value {
+                data: ValueData::Function(_),
+                ..
+            }
+            | Value {
+                ty: ValueType::Function { .. },
+                ..
+            } => unreachable!(),
 
             Value {
                 data: ValueData::Integer(_),
