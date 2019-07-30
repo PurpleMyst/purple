@@ -49,16 +49,14 @@ fn main() {
     let filename = "playground.purple";
     let input = std::fs::read_to_string(filename).unwrap();
 
-    let mut compiler = compiler::Compiler::new("main");
-
     let result = parser::parse(&input).and_then(|mut value| {
         typechecker::typecheck(&mut value).map_err(|error| vec![error])?;
 
-        compiler.compile(value).map_err(|error| vec![error])
+        compiler::compile("main", value).map_err(|error| vec![error])
     });
 
     match result {
-        Ok(value) => println!("{:#?}", value),
+        Ok(s) => println!("{}", s),
         Err(diagnostics) => diagnostics
             .into_iter()
             .for_each(|diagnostic| diagnostic.show(&input, filename)),

@@ -20,15 +20,15 @@ struct Frame<'a> {
 }
 
 #[derive(Debug)]
-pub struct Compiler<'a> {
+struct Compiler<'a> {
     context: Context,
-    module: Module,
+    pub(crate) module: Module,
     builder: Builder,
 
     frames: VecDeque<Frame<'a>>,
 }
 
-pub type Result<T, E = Diagnostic> = std::result::Result<T, E>;
+type Result<T, E = Diagnostic> = std::result::Result<T, E>;
 
 /// Temporarly move a builder into a basic block and restore it at the end of the block
 macro_rules! with_basic_block {
@@ -44,7 +44,7 @@ macro_rules! with_basic_block {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn new(module_name: &str) -> Self {
+    fn new(module_name: &str) -> Self {
         let context = Context::create();
         let mut frames = VecDeque::new();
         frames.push_back(Frame::default());
@@ -81,7 +81,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_function(&mut self, value: Vec<Value<'a>>) -> Result<FunctionValue> {
+    fn compile_function_definition(&mut self, value: Vec<Value<'a>>) -> Result<FunctionValue> {
         let mut value = value.into_iter();
 
         assert_eq!(variant!(value.next().unwrap() => Identifier)?, "function");
@@ -128,7 +128,29 @@ impl<'a> Compiler<'a> {
             self.builder.build_return(return_value.map(|v| v as _));
         });
 
+        self.frames[0]
+            .variables
+            .insert(name, function.as_global_value().as_pointer_value());
+
         Ok(function)
+    }
+
+    fn compile_function_call(&mut self, list: Vec<Value<'a>>) -> Result<BasicValueEnum> {
+        let mut list = list.into_iter();
+
+        let head = list.next().unwrap();
+        let head_span = head.span;
+
+        let function = match self.compile(head)? {
+            BasicValueEnum::PointerValue(ptr) => ptr,
+            _ => panic!("TODO: proper error"),
+        };
+
+        self.builder
+            .build_call(function, &[], "")
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| panic!("TODO: proper error"))
     }
 
     fn compile_list(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
@@ -137,7 +159,7 @@ impl<'a> Compiler<'a> {
 
         Ok(match variant!(&list[0] => Identifier)? {
             "function" => self
-                .compile_function(list)?
+                .compile_function_definition(list)?
                 .as_global_value()
                 .as_pointer_value()
                 .as_basic_value_enum(),
@@ -153,11 +175,11 @@ impl<'a> Compiler<'a> {
                         .level_message("Empty begin")
                 })?,
 
-            _ => unimplemented!(),
+            _ => self.compile_function_call(list)?,
         })
     }
 
-    pub fn compile(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
+    fn compile(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
         Ok(match value {
             Value {
                 data: ValueData::Integer(value),
@@ -212,5 +234,9 @@ impl<'a> Compiler<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {}
+/// Compile a value and return LLVM IR
+pub fn compile(module_name: &str, value: Value<'_>) -> Result<String> {
+    let mut compiler = Compiler::new(module_name);
+    compiler.compile(value)?;
+    Ok(compiler.module.print_to_string().to_string())
+}
