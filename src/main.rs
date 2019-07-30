@@ -1,4 +1,4 @@
-// XXX: Can we unify `variant!` and `variant_ref!`?
+// XXX: Can we unify these macros?
 macro_rules! variant {
     ($var:expr => $variant:ident) => {{
         let var = $var;
@@ -7,7 +7,7 @@ macro_rules! variant {
             Ok(x)
         } else {
             Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
+                .level_message(concat!("Expected value of type ", stringify!($variant))))
         }
     }};
 }
@@ -20,7 +20,7 @@ macro_rules! variant_ref {
             Ok(x)
         } else {
             Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
+                .level_message(concat!("Expected value of type ", stringify!($variant))))
         }
     }};
 }
@@ -33,7 +33,7 @@ macro_rules! variant_ref_mut {
             Ok(x)
         } else {
             Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                .level_message(concat!("Expected value of type ", stringify!($variant)).to_owned()))
+                .level_message(concat!("Expected value of type ", stringify!($variant))))
         }
     }};
 }

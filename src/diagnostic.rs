@@ -33,10 +33,10 @@ macro_rules! builder_method {
     ($($name:ident: $ty:ty),*) => {
         $(
         #[allow(dead_code)]
-        pub fn $name(self, $name: $ty) -> Self {
+        pub fn $name(self, $name: impl Into<$ty>) -> Self {
             assert!(self.$name.is_none());
             Self {
-                $name: Some($name),
+                $name: Some($name.into()),
                 ..self
             }
         }

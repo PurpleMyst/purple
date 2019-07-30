@@ -108,8 +108,7 @@ impl<'a> Compiler<'a> {
             .map(|sexpr| {
                 self.parse_typename(variant_ref!(sexpr => List)?.get(0).ok_or_else(|| {
                     Diagnostic::new(("error", colorful::Color::Red), sexpr.span).level_message(
-                        "Expected a two-length list containing the type and the argument name"
-                            .to_owned(),
+                        "Expected a two-length list containing the type and the argument name",
                     )
                 })?)
                 .map(|ty| self.to_llvm_type(ty))
@@ -130,7 +129,7 @@ impl<'a> Compiler<'a> {
         if !variant_ref!(&parameters => List)?.is_empty() {
             return Err(
                 Diagnostic::new(("error", colorful::Color::Red), parameters.span)
-                    .level_message("Parameters are not supported yet".to_owned()),
+                    .level_message("Parameters are not supported yet"),
             );
         }
 
@@ -189,7 +188,7 @@ impl<'a> Compiler<'a> {
                 ..
             } => {
                 return Err(Diagnostic::new(("error", colorful::Color::Red), span)
-                    .level_message("Could not infer type for integer value".to_owned()))
+                    .level_message("Could not infer type for integer value"))
             }
 
             Value {

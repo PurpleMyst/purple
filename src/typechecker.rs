@@ -126,20 +126,18 @@ impl<'a> Typechecker<'a> {
     }
 
     // TODO: factor this out cause the compiler wants it as well
-    fn to_type(&mut self, value: &Value<'a>) -> Result<ValueType> {
+    fn to_type(&self, value: &Value<'a>) -> Result<ValueType> {
         match &value.data {
-            ValueData::Identifier(ident) => match ident.as_ref() {
-                "i32" => Ok(ValueType::Integer {
-                    size: Some(32),
-                    signed: Some(true),
-                }),
+            ValueData::Identifier("i32") => Ok(ValueType::Integer {
+                size: Some(32),
+                signed: Some(true),
+            }),
 
-                _ => Err(Diagnostic::new(("error", Red), value.span)
-                    .level_message(format!("Unknown type {:?}", ident))),
-            },
+            ValueData::Identifier(ident) => Err(Diagnostic::new(("error", Red), value.span)
+                .level_message(format!("Unknown type {:?}", ident))),
 
             _ => Err(Diagnostic::new(("error", Red), value.span)
-                .level_message("Expected a type".to_owned())),
+                .level_message("Expected a type identifier")),
         }
     }
 
@@ -148,39 +146,41 @@ impl<'a> Typechecker<'a> {
         let span = value.span;
         let mut list = variant_ref!(value => List)?.iter();
 
-        match list.next() {
+        let ty = match list.next() {
             Some(
                 value @ Value {
                     data: ValueData::Identifier(_),
                     ..
                 },
-            ) => {
-                let variable = self.get_variable(value)?;
-
-                if let ValueType::Function {
-                    ref parameter_types,
-                    ref return_type,
-                } = variable.ty()
-                {
-                    list.zip(parameter_types)
-                        .map(|(param, ty)| self.expect_type(ty, param))
-                        .collect::<Result>()?;
-
-                    Ok(return_type)
-                } else {
-                    Err(Diagnostic::new(("error", Red), span)
-                        .level_message(format!("Expected a function, got {:?}", variable.ty())))
-                }
-            }
+            ) => self.get_variable(value)?.ty(),
 
             // TODO: Support inline functions
-            Some(value) => Err(Diagnostic::new(("error", Red), span).level_message(format!(
-                "Expected a callable, found value of type {:?}",
-                self.get_type(value)
-            ))),
+            Some(value) => {
+                return Err(Diagnostic::new(("error", Red), span).level_message(format!(
+                    "Expected a callable, found value of type {:?}",
+                    self.get_type(value)
+                )))
+            }
 
-            None => Err(Diagnostic::new(("error", Red), span)
-                .level_message("Expected a function call, found the empty list".to_owned())),
+            None => {
+                return Err(Diagnostic::new(("error", Red), span)
+                    .level_message("Expected a function call, found the empty list"))
+            }
+        };
+
+        if let ValueType::Function {
+            parameter_types,
+            return_type,
+        } = ty
+        {
+            list.zip(parameter_types)
+                .map(|(param, ty)| self.expect_type(ty, param))
+                .collect::<Result>()?;
+
+            Ok(return_type)
+        } else {
+            Err(Diagnostic::new(("error", Red), span)
+                .level_message(format!("Expected a function, got {:?}", ty)))
         }
     }
 
@@ -189,7 +189,7 @@ impl<'a> Typechecker<'a> {
 
         if list.len() <= 4 {
             return Err(Diagnostic::new(("error", Red), value.span)
-                .level_message("Expected a function with a body".to_owned()));
+                .level_message("Expected a function with a body"));
         }
 
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
@@ -223,7 +223,7 @@ impl<'a> Typechecker<'a> {
 
         if !parameters.is_empty() {
             return Err(Diagnostic::new(("error", Red), list[2].span)
-                .level_message("Parameters are not supported".to_owned()));
+                .level_message("Parameters are not supported"));
         }
 
         // Add the function to the global context, with just its type due to the value's data
@@ -249,8 +249,7 @@ impl<'a> Typechecker<'a> {
 
             ValueData::List(ref mut list) => {
                 let head = list.get_mut(0).ok_or_else(|| {
-                    Diagnostic::new(("error", Red), span)
-                        .level_message("Empty list not supported".to_owned())
+                    Diagnostic::new(("error", Red), span).level_message("Empty list not supported")
                 })?;
 
                 match head.data {
