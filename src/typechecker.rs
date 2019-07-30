@@ -198,7 +198,7 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn typecheck_function(&mut self, mut value: &mut Value<'a>) -> Result {
+    fn typecheck_function_definition(&mut self, mut value: &mut Value<'a>) -> Result {
         let span = value.span;
 
         let list = variant_ref_mut!(&mut value => List)?;
@@ -264,7 +264,7 @@ impl<'a> Typechecker<'a> {
 
                 match head.data {
                     ValueData::Identifier(ref ident) => match ident.as_ref() {
-                        "function" => self.typecheck_function(value),
+                        "function" => self.typecheck_function_definition(value),
                         "begin" => variant_ref_mut!(value => List)?
                             .into_iter()
                             .skip(1)
