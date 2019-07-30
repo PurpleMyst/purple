@@ -44,16 +44,19 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn get_variable(&self, ident: &'a str, span: (usize, usize)) -> Result<&Variable<'a>> {
+    fn get_variable(&self, value: &Value<'a>) -> Result<&Variable<'a>> {
+        let ident = variant_ref!(value => Identifier)?;
+
         self.variables
             .iter()
             .find_map(|level| level.get(ident))
             .ok_or_else(|| {
-                Diagnostic::new(("error", Red), span)
+                Diagnostic::new(("error", Red), value.span)
                     .level_message(format!("Undefined variable {:?}", ident))
             })
     }
 
+    /// Return a mutable reference to a value's type through a shared reference.
     fn get_type(&self, value: &Value) -> RefMut<ValueType> {
         RefMut::map(self.types.borrow_mut(), |h| {
             h.entry(value.span).or_insert_with(|| value.ty.clone())
@@ -61,55 +64,53 @@ impl<'a> Typechecker<'a> {
     }
 
     fn expect_type(&self, expected_ty: &ValueType, value: &Value<'a>) -> Result {
-        match value {
-            Value {
-                data: ValueData::Identifier(ident),
-                span,
-                ..
-            } => {
-                assert_eq!(value.ty, ValueType::Identifier);
+        match value.data {
+            ValueData::Identifier(_) => match self.get_variable(value)? {
+                Variable::ValueRef(value) => {
+                    self.expect_type(expected_ty, value)?;
+                    return Ok(());
+                }
 
-                match self.get_variable(ident, *span)? {
-                    Variable::ValueRef(value) => {
-                        self.expect_type(expected_ty, value)?;
+                Variable::Type(ref ty) => {
+                    if *ty == *expected_ty {
                         return Ok(());
                     }
+                }
+            },
 
-                    Variable::Type(ref ty) => {
-                        if *ty == *expected_ty {
-                            return Ok(());
-                        }
-                    }
+            ValueData::List(_) => {
+                let return_type = self.typecheck_function_call(value)?;
+                if return_type == expected_ty {
+                    return Ok(());
+                } else {
+                    return Err(Diagnostic::new(("error", Red), value.span).level_message(
+                        format!(
+                            "Expected return type {:?}, found {:?}",
+                            expected_ty, return_type,
+                        ),
+                    ));
                 }
             }
 
-            Value {
-                data: ValueData::List(_),
-                ..
-            } => {
-                self.typecheck_function_call(value, Some(expected_ty))?;
+            ValueData::Integer(_) => {
+                let mut ty = self.get_type(value);
 
-                return Ok(());
-            }
-
-            Value {
-                data: ValueData::Integer(_),
-                ty:
-                    ValueType::Integer {
-                        size: None,
-                        signed: None,
-                    },
-                ..
-            } => {
-                if let ValueType::Integer { .. } = expected_ty {
-                    *self.get_type(value) = expected_ty.clone();
+                if let ValueType::Integer {
+                    size: None,
+                    signed: None,
+                } = &*ty
+                {
+                    if let ValueType::Integer { .. } = expected_ty {
+                        *ty = expected_ty.clone();
+                        return Ok(());
+                    }
+                } else if *ty == *expected_ty {
                     return Ok(());
                 }
             }
 
-            // this covers strings and known-size integers
-            Value { ty, .. } => {
-                if *ty == *expected_ty {
+            ValueData::String(_) | ValueData::Function(_) => {
+                if *self.get_type(value) == *expected_ty {
                     return Ok(());
                 }
             }
@@ -118,7 +119,8 @@ impl<'a> Typechecker<'a> {
         Err(
             Diagnostic::new(("error", Red), value.span).level_message(format!(
                 "Expected type {:?}, found {:?}",
-                expected_ty, value.ty,
+                expected_ty,
+                self.get_type(value),
             )),
         )
     }
@@ -141,66 +143,48 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn typecheck_function_call(
-        &self,
-        value: &Value<'a>,
-        expected_return_ty: Option<&ValueType>,
-    ) -> Result {
+    /// Typecheck a non-builtin function call's parameters and return its return type
+    fn typecheck_function_call(&self, value: &Value<'a>) -> Result<&ValueType> {
         let span = value.span;
         let mut list = variant_ref!(value => List)?.iter();
 
         match list.next() {
-            Some(Value {
-                data: ValueData::Identifier(ident),
-                ..
-            }) => {
-                let variable = self.get_variable(ident, span)?;
+            Some(
+                value @ Value {
+                    data: ValueData::Identifier(_),
+                    ..
+                },
+            ) => {
+                let variable = self.get_variable(value)?;
 
                 if let ValueType::Function {
                     ref parameter_types,
                     ref return_type,
                 } = variable.ty()
                 {
-                    if expected_return_ty
-                        .map(|expected_return_ty| *expected_return_ty != **return_type)
-                        .unwrap_or(false)
-                    {
-                        return Err(Diagnostic::new(("error", Red), span).level_message(format!(
-                            "Expected type {:?}, found {:?}",
-                            expected_return_ty, return_type
-                        )));
-                    }
-
                     list.zip(parameter_types)
                         .map(|(param, ty)| self.expect_type(ty, param))
                         .collect::<Result>()?;
+
+                    Ok(return_type)
                 } else {
-                    unimplemented!() // FIXME: proper error
-                }
-
-                Ok(())
-            }
-
-            None => {
-                return match expected_return_ty {
-                    Some(expected_return_ty) => Err(Diagnostic::new(("error", Red), span)
-                        .level_message(format!(
-                            "Expected type {:?}, found the empty list",
-                            expected_return_ty
-                        ))),
-                    None => Ok(()),
+                    Err(Diagnostic::new(("error", Red), span)
+                        .level_message(format!("Expected a function, got {:?}", variable.ty())))
                 }
             }
 
-            // FIXME: Support inline functions and give a proper error for stuff that isn't meant
-            // to be called
-            _ => unimplemented!(),
+            // TODO: Support inline functions
+            Some(value) => Err(Diagnostic::new(("error", Red), span).level_message(format!(
+                "Expected a callable, found value of type {:?}",
+                self.get_type(value)
+            ))),
+
+            None => Err(Diagnostic::new(("error", Red), span)
+                .level_message("Expected a function call, found the empty list".to_owned())),
         }
     }
 
     fn typecheck_function_definition(&mut self, mut value: &mut Value<'a>) -> Result {
-        let span = value.span;
-
         let list = variant_ref_mut!(&mut value => List)?;
 
         if list.len() <= 4 {
@@ -210,15 +194,8 @@ impl<'a> Typechecker<'a> {
 
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
         //                           ^^^^^^^^^^^
-        let return_type = list
-            .get(3)
-            .ok_or_else(|| {
-                Diagnostic::new(("error", Red), span)
-                    .level_message("Expected a return type".to_owned())
-            })
-            .and_then(|value| self.to_type(value))?;
+        let return_type = self.to_type(&list[3])?;
 
-        // We know the list has a `last_mut` due to the check above.
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
         //                                           ^^^^^^^^^^^^
         let return_value = list.last_mut().unwrap();
@@ -227,20 +204,34 @@ impl<'a> Typechecker<'a> {
 
         self.variables.push_front(Default::default());
 
-        // Check the type for everything in the body, as well
+        // Typecheck the function's body
         list.iter_mut()
             .skip(4)
             .map(|value| self.typecheck(value))
             .collect::<Result>()?;
 
-        assert!(self.variables.pop_front().is_some());
+        self.variables.pop_front();
 
-        let name = variant_ref!(list.get(1).unwrap() => Identifier)?;
-        self.variables.get_mut(0).unwrap().insert(
+        // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
+        //           ^^^^
+        let name = variant_ref!(&list[1] => Identifier)?;
+
+        // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
+        //                ^^^^^^^^^^
+        let parameters = variant_ref!(&list[2] => List)?;
+        let parameter_types = vec![];
+
+        if !parameters.is_empty() {
+            return Err(Diagnostic::new(("error", Red), list[2].span)
+                .level_message("Parameters are not supported".to_owned()));
+        }
+
+        // Add the function to the global context, with just its type due to the value's data
+        // depending on its compilation
+        self.variables[0].insert(
             name,
             Variable::Type(ValueType::Function {
-                // FIXME: implement parameter types
-                parameter_types: vec![],
+                parameter_types,
                 return_type: Box::new(return_type),
             }),
         );
@@ -249,31 +240,29 @@ impl<'a> Typechecker<'a> {
     }
 
     fn typecheck(&mut self, value: &mut Value<'a>) -> Result {
+        let span = value.span;
+
         match value.data {
             ValueData::Integer(..) | ValueData::Identifier(..) | ValueData::String(..) => Ok(()),
 
             ValueData::Function(_) => unreachable!(),
 
             ValueData::List(ref mut list) => {
-                let head = if let Some(head) = list.get_mut(0) {
-                    head
-                } else {
-                    return Err(Diagnostic::new(("error", Red), value.span)
-                        .level_message("Empty list not supported".to_owned()));
-                };
+                let head = list.get_mut(0).ok_or_else(|| {
+                    Diagnostic::new(("error", Red), span)
+                        .level_message("Empty list not supported".to_owned())
+                })?;
 
                 match head.data {
-                    ValueData::Identifier(ref ident) => match ident.as_ref() {
-                        "function" => self.typecheck_function_definition(value),
-                        "begin" => variant_ref_mut!(value => List)?
-                            .into_iter()
-                            .skip(1)
-                            .map(|value: &mut Value| self.typecheck(value))
-                            .collect::<Result>(),
-                        _ => self.typecheck_function_call(value, None),
-                    },
+                    ValueData::Identifier("function") => self.typecheck_function_definition(value),
 
-                    _ => unimplemented!(),
+                    ValueData::Identifier("begin") => variant_ref_mut!(value => List)?
+                        .into_iter()
+                        .skip(1)
+                        .map(|value: &mut Value| self.typecheck(value))
+                        .collect::<Result>(),
+
+                    _ => self.typecheck_function_call(value).map(|_| ()),
                 }
             }
         }
