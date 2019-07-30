@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::cell::{RefCell, RefMut};
 use std::collections::{hash_map::HashMap, vec_deque::VecDeque};
 
 use crate::{
@@ -12,56 +13,54 @@ use colorful::Color::Red;
 #[derive(Debug)]
 #[must_use]
 enum Variable<'a> {
-    ValueRef(&'a mut Value<'a>),
+    ValueRef(&'a Value<'a>),
 
     // We utilize this enum variant for things such as functions, whose associated data depends on
     // compilation.
     Type(ValueType),
 }
 
-impl<'a> From<&'a mut Value<'a>> for Variable<'a> {
-    fn from(value: &'a mut Value<'a>) -> Variable<'a> {
-        Variable::ValueRef(value)
+impl<'a> Variable<'a> {
+    fn ty(&self) -> &ValueType {
+        match self {
+            Variable::ValueRef(Value { ty, .. }) | Variable::Type(ty) => ty,
+        }
     }
 }
 
-impl From<ValueType> for Variable<'static> {
-    fn from(ty: ValueType) -> Variable<'static> {
-        Variable::Type(ty)
-    }
-}
-
-pub struct Typechecker<'a> {
-    // TODO: Look into using IndexMap
+#[derive(Debug)]
+struct Typechecker<'a> {
     variables: VecDeque<HashMap<&'a str, Variable<'a>>>,
+    types: RefCell<HashMap<(usize, usize), ValueType>>,
 }
 
 type Result<T = (), E = Diagnostic> = std::result::Result<T, E>;
 
 impl<'a> Typechecker<'a> {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             variables: VecDeque::from(vec![HashMap::new()]),
+            types: RefCell::new(HashMap::new()),
         }
     }
 
-    fn pop_variable(
-        &mut self,
-        ident: &'a str,
-        span: (usize, usize),
-    ) -> Result<(usize, Variable<'a>)> {
+    fn get_variable(&self, ident: &'a str, span: (usize, usize)) -> Result<&Variable<'a>> {
         self.variables
-            .iter_mut()
-            .enumerate()
-            .find_map(|(idx, frame)| frame.remove(ident).map(|value| (idx, value)))
+            .iter()
+            .find_map(|level| level.get(ident))
             .ok_or_else(|| {
                 Diagnostic::new(("error", Red), span)
                     .level_message(format!("Undefined variable {:?}", ident))
             })
     }
 
-    // XXX: Can we ever have issues with `pop_variable` being called twice?
-    fn expect_type(&mut self, expected_ty: &ValueType, value: &mut Value<'a>) -> Result {
+    fn get_type(&self, value: &Value) -> RefMut<ValueType> {
+        RefMut::map(self.types.borrow_mut(), |h| {
+            h.entry(value.span).or_insert_with(|| value.ty.clone())
+        })
+    }
+
+    fn expect_type(&self, expected_ty: &ValueType, value: &Value<'a>) -> Result {
         match value {
             Value {
                 data: ValueData::Identifier(ident),
@@ -70,21 +69,17 @@ impl<'a> Typechecker<'a> {
             } => {
                 assert_eq!(value.ty, ValueType::Identifier);
 
-                let (frame_idx, mut variable) = self.pop_variable(ident, *span)?;
-
-                let ok = match variable {
-                    Variable::ValueRef(ref mut value) => {
-                        self.expect_type(expected_ty, &mut **value)?;
-                        true
+                match self.get_variable(ident, *span)? {
+                    Variable::ValueRef(value) => {
+                        self.expect_type(expected_ty, value)?;
+                        return Ok(());
                     }
 
-                    Variable::Type(ref ty) => *ty == *expected_ty,
-                };
-
-                self.variables[frame_idx].insert(ident, variable);
-
-                if ok {
-                    return Ok(());
+                    Variable::Type(ref ty) => {
+                        if *ty == *expected_ty {
+                            return Ok(());
+                        }
+                    }
                 }
             }
 
@@ -100,14 +95,14 @@ impl<'a> Typechecker<'a> {
             Value {
                 data: ValueData::Integer(_),
                 ty:
-                    ty @ ValueType::Integer {
+                    ValueType::Integer {
                         size: None,
                         signed: None,
                     },
                 ..
             } => {
                 if let ValueType::Integer { .. } = expected_ty {
-                    *ty = expected_ty.clone();
+                    *self.get_type(value) = expected_ty.clone();
                     return Ok(());
                 }
             }
@@ -147,32 +142,24 @@ impl<'a> Typechecker<'a> {
     }
 
     fn typecheck_function_call(
-        &mut self,
-        value: &mut Value<'a>,
+        &self,
+        value: &Value<'a>,
         expected_return_ty: Option<&ValueType>,
     ) -> Result {
         let span = value.span;
-        let mut list = variant_ref_mut!(value => List)?.iter_mut();
+        let mut list = variant_ref!(value => List)?.iter();
 
         match list.next() {
             Some(Value {
                 data: ValueData::Identifier(ident),
                 ..
             }) => {
-                let (frame_idx, mut variable) = self.pop_variable(ident, span)?;
+                let variable = self.get_variable(ident, span)?;
 
-                if let Variable::ValueRef(Value {
-                    ty:
-                        ValueType::Function {
-                            ref mut parameter_types,
-                            ref mut return_type,
-                        },
-                    ..
-                })
-                | Variable::Type(ValueType::Function {
-                    ref mut parameter_types,
-                    ref mut return_type,
-                }) = variable
+                if let ValueType::Function {
+                    ref parameter_types,
+                    ref return_type,
+                } = variable.ty()
                 {
                     if expected_return_ty
                         .map(|expected_return_ty| *expected_return_ty != **return_type)
@@ -190,8 +177,6 @@ impl<'a> Typechecker<'a> {
                 } else {
                     unimplemented!() // FIXME: proper error
                 }
-
-                self.variables[frame_idx].insert(ident, variable);
 
                 Ok(())
             }
@@ -263,7 +248,7 @@ impl<'a> Typechecker<'a> {
         Ok(())
     }
 
-    pub fn typecheck(&mut self, value: &mut Value<'a>) -> Result {
+    fn typecheck(&mut self, value: &mut Value<'a>) -> Result {
         match value.data {
             ValueData::Integer(..) | ValueData::Identifier(..) | ValueData::String(..) => Ok(()),
 
@@ -293,4 +278,23 @@ impl<'a> Typechecker<'a> {
             }
         }
     }
+
+    fn apply_types(&mut self, value: &mut Value<'a>) -> Result {
+        value.ty = self.get_type(&*value).to_owned();
+
+        if let ValueData::List(ref mut vs) = value.data {
+            vs.iter_mut()
+                .map(|value| self.apply_types(value))
+                .collect::<Result>()?;
+        }
+
+        Ok(())
+    }
+}
+
+pub fn typecheck<'a>(value: &mut Value<'a>) -> Result {
+    let mut typechecker = Typechecker::new();
+    typechecker.typecheck(value)?;
+    typechecker.apply_types(value)?;
+    Ok(())
 }

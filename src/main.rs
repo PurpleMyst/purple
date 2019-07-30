@@ -52,9 +52,7 @@ fn main() {
     let mut compiler = compiler::Compiler::new("main");
 
     let result = parser::parse(&input).and_then(|mut value| {
-        typechecker::Typechecker::new()
-            .typecheck(&mut value)
-            .map_err(|error| vec![error])?;
+        typechecker::typecheck(&mut value).map_err(|error| vec![error])?;
 
         compiler.compile(value).map_err(|error| vec![error])
     });
