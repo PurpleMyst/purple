@@ -10,6 +10,7 @@ use inkwell::{
 
 use crate::{
     diagnostic::Diagnostic,
+    typechecker::parse_typename,
     value::{Value, ValueData, ValueType},
 };
 
@@ -67,21 +68,6 @@ impl<'a> Compiler<'a> {
             })
     }
 
-    fn parse_typename(&self, name: &Value<'_>) -> Result<ValueType> {
-        Ok(match variant_ref!(name => Identifier)? as &str {
-            // FIXME: handle the same integer types as the parser
-            "i32" => ValueType::Integer {
-                size: Some(32),
-                signed: Some(true),
-            },
-
-            ident => {
-                return Err(Diagnostic::new(("error", colorful::Color::Red), name.span)
-                    .level_message(format!("Unknown type {}", ident)));
-            }
-        })
-    }
-
     fn to_llvm_type(&self, ty: ValueType) -> BasicTypeEnum {
         match ty {
             ValueType::Integer {
@@ -95,18 +81,20 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_function(&mut self, mut value: Vec<Value<'a>>) -> Result<FunctionValue> {
-        assert_eq!(variant!(value.remove(0) => Identifier)?, "function");
+    fn compile_function(&mut self, value: Vec<Value<'a>>) -> Result<FunctionValue> {
+        let mut value = value.into_iter();
 
-        let name = variant!(value.remove(0) => Identifier)?;
-        let parameters = value.remove(0);
-        let return_type = self.parse_typename(&value.remove(0))?;
-        let mut body = value;
+        assert_eq!(variant!(value.next().unwrap() => Identifier)?, "function");
+
+        let name = variant!(value.next().unwrap() => Identifier)?;
+        let parameters = value.next().unwrap();
+        let return_type = parse_typename(&value.next().unwrap())?;
+        let body = value;
 
         let parameter_types = variant_ref!(&parameters => List)?
             .iter()
             .map(|sexpr| {
-                self.parse_typename(variant_ref!(sexpr => List)?.get(0).ok_or_else(|| {
+                parse_typename(variant_ref!(sexpr => List)?.get(0).ok_or_else(|| {
                     Diagnostic::new(("error", colorful::Color::Red), sexpr.span).level_message(
                         "Expected a two-length list containing the type and the argument name",
                     )
@@ -143,15 +131,27 @@ impl<'a> Compiler<'a> {
         Ok(function)
     }
 
-    fn compile_sexpr(&mut self, sexpr: Vec<Value<'a>>) -> Result<BasicValueEnum> {
-        let first_ident: &str = variant_ref!(sexpr.get(0).unwrap() => Identifier)?.as_ref();
+    fn compile_list(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
+        let span = value.span;
+        let list = variant!(value => List)?;
 
-        Ok(match first_ident {
+        Ok(match variant!(&list[0] => Identifier)? {
             "function" => self
-                .compile_function(sexpr)?
+                .compile_function(list)?
                 .as_global_value()
                 .as_pointer_value()
                 .as_basic_value_enum(),
+
+            "begin" => list
+                .into_iter()
+                .skip(1)
+                .map(|value| self.compile(value))
+                .collect::<Result<Vec<_>>>()?
+                .pop()
+                .ok_or_else(|| {
+                    Diagnostic::new(("error", colorful::Color::Red), span)
+                        .level_message("Empty begin")
+                })?,
 
             _ => unimplemented!(),
         })
@@ -205,9 +205,9 @@ impl<'a> Compiler<'a> {
             } => self.compile_identifier(s.as_ref(), value.span)?,
 
             Value {
-                data: ValueData::List(v),
+                data: ValueData::List(_),
                 ..
-            } => self.compile_sexpr(v)?,
+            } => self.compile_list(value)?,
         })
     }
 }

@@ -36,6 +36,23 @@ struct Typechecker<'a> {
 
 type Result<T = (), E = Diagnostic> = std::result::Result<T, E>;
 
+pub(crate) fn parse_typename<'a>(value: &Value<'a>) -> Result<ValueType> {
+    match &value.data {
+        ValueData::Identifier("i32") => Ok(ValueType::Integer {
+            size: Some(32),
+            signed: Some(true),
+        }),
+
+        ValueData::Identifier(ident) => Err(Diagnostic::new(("error", Red), value.span)
+            .level_message(format!("Unknown type {:?}", ident))),
+
+        _ => {
+            Err(Diagnostic::new(("error", Red), value.span)
+                .level_message("Expected a type identifier"))
+        }
+    }
+}
+
 impl<'a> Typechecker<'a> {
     fn new() -> Self {
         Self {
@@ -126,21 +143,6 @@ impl<'a> Typechecker<'a> {
     }
 
     // TODO: factor this out cause the compiler wants it as well
-    fn to_type(&self, value: &Value<'a>) -> Result<ValueType> {
-        match &value.data {
-            ValueData::Identifier("i32") => Ok(ValueType::Integer {
-                size: Some(32),
-                signed: Some(true),
-            }),
-
-            ValueData::Identifier(ident) => Err(Diagnostic::new(("error", Red), value.span)
-                .level_message(format!("Unknown type {:?}", ident))),
-
-            _ => Err(Diagnostic::new(("error", Red), value.span)
-                .level_message("Expected a type identifier")),
-        }
-    }
-
     /// Typecheck a non-builtin function call's parameters and return its return type
     fn typecheck_function_call(&self, value: &Value<'a>) -> Result<&ValueType> {
         let span = value.span;
@@ -194,7 +196,7 @@ impl<'a> Typechecker<'a> {
 
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
         //                           ^^^^^^^^^^^
-        let return_type = self.to_type(&list[3])?;
+        let return_type = parse_typename(&list[3])?;
 
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
         //                                           ^^^^^^^^^^^^
