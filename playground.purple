@@ -1,9 +1,9 @@
 (begin
-    (function zero() i32
-        0
+    (function id((i32 x)) i32
+        x
     )
 
     (function main() i32
-        (zero)
+        (id 42)
     )
 )

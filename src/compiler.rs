@@ -16,7 +16,7 @@ use crate::{
 
 #[derive(Default, Debug)]
 struct Frame<'a> {
-    variables: HashMap<&'a str, PointerValue>,
+    variables: HashMap<&'a str, BasicValueEnum>,
 }
 
 #[derive(Debug)]
@@ -57,13 +57,15 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_identifier(&mut self, ident: &str, span: (usize, usize)) -> Result<BasicValueEnum> {
+    fn compile_identifier(&self, value: Value<'a>) -> Result<BasicValueEnum> {
+        let ident = variant!(&value => Identifier)?;
+
         self.frames
             .iter()
             .find_map(|frame| frame.variables.get(ident))
-            .map(|value| value.as_basic_value_enum())
+            .copied()
             .ok_or_else(|| {
-                Diagnostic::new(("error", colorful::Color::Red), span)
+                Diagnostic::new(("error", colorful::Color::Red), value.span)
                     .level_message(format!("Undefined variable {:?}", ident))
             })
     }
@@ -87,21 +89,33 @@ impl<'a> Compiler<'a> {
         assert_eq!(variant!(value.next().unwrap() => Identifier)?, "function");
 
         let name = variant!(value.next().unwrap() => Identifier)?;
-        let parameters = value.next().unwrap();
+        let parameters = variant!(value.next().unwrap() => List)?;
         let return_type = parse_typename(&value.next().unwrap())?;
         let body = value;
 
-        let parameter_types = variant_ref!(&parameters => List)?
+        let parameter_types = parameters
             .iter()
-            .map(|sexpr| {
-                parse_typename(variant_ref!(sexpr => List)?.get(0).ok_or_else(|| {
-                    Diagnostic::new(("error", colorful::Color::Red), sexpr.span).level_message(
-                        "Expected a two-length list containing the type and the argument name",
-                    )
-                })?)
-                .map(|ty| self.to_llvm_type(ty))
+            .map(|parameter| {
+                Ok(self.to_llvm_type(parse_typename(
+                    variant_ref!(parameter => List)?.get(0).ok_or_else(|| {
+                        Diagnostic::new(("error", colorful::Color::Red), parameter.span)
+                            .level_message("Expected a parameter type")
+                    })?,
+                )?))
             })
             .collect::<Result<Vec<BasicTypeEnum>>>()?;
+
+        let parameter_names = parameters
+            .iter()
+            .map(|parameter| {
+                variant!(
+                variant_ref!(parameter => List)?
+                    .get(1)
+                    .ok_or_else(|| Diagnostic::new(("error", colorful::Color::Red), parameter.span)
+                    .level_message("Expected a parameter name"))?
+                => Identifier)
+            })
+            .collect::<Result<Vec<&str>>>()?;
 
         let function_type = self
             .to_llvm_type(return_type)
@@ -111,15 +125,23 @@ impl<'a> Compiler<'a> {
             .module
             .add_function(&name, function_type, /*linkage:*/ None);
 
+        // We insert it before compilation to allow for recursion
+        self.frames.back_mut().unwrap().variables.insert(
+            name,
+            function
+                .as_global_value()
+                .as_pointer_value()
+                .as_basic_value_enum(),
+        );
+
         let entry_block = self.context.append_basic_block(&function, "entry");
 
-        // FIXME: create a new frame + assign the arguments
-        if !variant_ref!(&parameters => List)?.is_empty() {
-            return Err(
-                Diagnostic::new(("error", colorful::Color::Red), parameters.span)
-                    .level_message("Parameters are not supported yet"),
-            );
-        }
+        self.frames.push_front(Frame {
+            variables: parameter_names
+                .into_iter()
+                .zip(function.get_params().into_iter())
+                .collect(),
+        });
 
         with_basic_block!(self.builder: entry_block => {
             let body_values = body.into_iter().map(|v| self.compile(v.clone())).collect::<Result<Vec<BasicValueEnum>>>()?;
@@ -128,14 +150,16 @@ impl<'a> Compiler<'a> {
             self.builder.build_return(return_value.map(|v| v as _));
         });
 
-        self.frames[0]
-            .variables
-            .insert(name, function.as_global_value().as_pointer_value());
+        self.frames.pop_front();
 
         Ok(function)
     }
 
-    fn compile_function_call(&mut self, list: Vec<Value<'a>>) -> Result<BasicValueEnum> {
+    fn compile_function_call(
+        &mut self,
+        list: Vec<Value<'a>>,
+        span: (usize, usize),
+    ) -> Result<BasicValueEnum> {
         let mut list = list.into_iter();
 
         let head = list.next().unwrap();
@@ -143,28 +167,38 @@ impl<'a> Compiler<'a> {
 
         let function = match self.compile(head)? {
             BasicValueEnum::PointerValue(ptr) => ptr,
-            _ => panic!("TODO: proper error"),
+            _ => {
+                return Err(Diagnostic::new(("error", colorful::Color::Red), head_span)
+                    .level_message("Expected a function pointer"))
+            }
         };
 
+        let parameters = list
+            .map(|value| self.compile(value))
+            .collect::<Result<Vec<BasicValueEnum>>>()?;
+
         self.builder
-            .build_call(function, &[], "")
+            .build_call(function, parameters.as_slice(), "")
             .try_as_basic_value()
             .left()
-            .ok_or_else(|| panic!("TODO: proper error"))
+            .ok_or_else(|| {
+                Diagnostic::new(("error", colorful::Color::Red), span)
+                    .level_message("Expected a non-void return type")
+            })
     }
 
     fn compile_list(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
         let span = value.span;
         let list = variant!(value => List)?;
 
-        Ok(match variant!(&list[0] => Identifier)? {
-            "function" => self
+        Ok(match &list[0].data {
+            ValueData::Identifier("function") => self
                 .compile_function_definition(list)?
                 .as_global_value()
                 .as_pointer_value()
                 .as_basic_value_enum(),
 
-            "begin" => list
+            ValueData::Identifier("begin") => list
                 .into_iter()
                 .skip(1)
                 .map(|value| self.compile(value))
@@ -175,7 +209,7 @@ impl<'a> Compiler<'a> {
                         .level_message("Empty begin")
                 })?,
 
-            _ => self.compile_function_call(list)?,
+            _ => self.compile_function_call(list, span)?,
         })
     }
 
@@ -196,15 +230,6 @@ impl<'a> Compiler<'a> {
                 .as_basic_value_enum(),
 
             Value {
-                data: ValueData::Function(_),
-                ..
-            }
-            | Value {
-                ty: ValueType::Function { .. },
-                ..
-            } => unreachable!(),
-
-            Value {
                 data: ValueData::Integer(_),
                 span,
                 ..
@@ -212,6 +237,15 @@ impl<'a> Compiler<'a> {
                 return Err(Diagnostic::new(("error", colorful::Color::Red), span)
                     .level_message("Could not infer type for integer value"))
             }
+
+            Value {
+                data: ValueData::Function(_),
+                ..
+            }
+            | Value {
+                ty: ValueType::Function { .. },
+                ..
+            } => unreachable!(),
 
             Value {
                 data: ValueData::String(s),
@@ -222,9 +256,9 @@ impl<'a> Compiler<'a> {
                 .as_basic_value_enum(),
 
             Value {
-                data: ValueData::Identifier(s),
+                data: ValueData::Identifier(_),
                 ..
-            } => self.compile_identifier(s.as_ref(), value.span)?,
+            } => self.compile_identifier(value)?,
 
             Value {
                 data: ValueData::List(_),

@@ -70,6 +70,7 @@ impl<'a> Typechecker<'a> {
             .ok_or_else(|| {
                 Diagnostic::new(("error", Red), value.span)
                     .level_message(format!("Undefined variable {:?}", ident))
+                    .note("This error happened while type-checking")
             })
     }
 
@@ -186,33 +187,13 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn typecheck_function_definition(&mut self, mut value: &mut Value<'a>) -> Result {
-        let list = variant_ref_mut!(&mut value => List)?;
+    fn typecheck_function_definition(&mut self, value: &Value<'a>) -> Result {
+        let list = variant_ref!(&value => List)?;
 
         if list.len() <= 4 {
             return Err(Diagnostic::new(("error", Red), value.span)
                 .level_message("Expected a function with a body"));
         }
-
-        // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
-        //                           ^^^^^^^^^^^
-        let return_type = parse_typename(&list[3])?;
-
-        // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
-        //                                           ^^^^^^^^^^^^
-        let return_value = list.last_mut().unwrap();
-
-        self.expect_type(&return_type, return_value)?;
-
-        self.variables.push_front(Default::default());
-
-        // Typecheck the function's body
-        list.iter_mut()
-            .skip(4)
-            .map(|value| self.typecheck(value))
-            .collect::<Result>()?;
-
-        self.variables.pop_front();
 
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
         //           ^^^^
@@ -221,27 +202,58 @@ impl<'a> Typechecker<'a> {
         // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
         //                ^^^^^^^^^^
         let parameters = variant_ref!(&list[2] => List)?;
-        let parameter_types = vec![];
 
-        if !parameters.is_empty() {
-            return Err(Diagnostic::new(("error", Red), list[2].span)
-                .level_message("Parameters are not supported"));
-        }
+        // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
+        //                           ^^^^^^^^^^^
+        let return_type = parse_typename(&list[3])?;
+
+        // (function NAME PARAMETERS RETURN_TYPE ... RETURN_VALUE)
+        //                                           ^^^^^^^^^^^^
+        let return_value = list.last().unwrap();
 
         // Add the function to the global context, with just its type due to the value's data
         // depending on its compilation
-        self.variables[0].insert(
+        self.variables.back_mut().unwrap().insert(
             name,
             Variable::Type(ValueType::Function {
-                parameter_types,
-                return_type: Box::new(return_type),
+                parameter_types: parameters
+                    .iter()
+                    .map(|parameter| parse_typename(&variant_ref!(parameter => List)?[0]))
+                    .collect::<Result<Vec<_>>>()?,
+
+                return_type: Box::new(return_type.clone()),
             }),
         );
+
+        self.variables.push_front(
+            parameters
+                .iter()
+                .map(|parameter| {
+                    let parameter = variant_ref!(parameter => List)?;
+                    let parameter_ty = parse_typename(&parameter[0])?;
+                    let parameter_name = variant!(&parameter[1] => Identifier)?;
+
+                    Ok((parameter_name, Variable::Type(parameter_ty)))
+                })
+                .collect::<Result<_>>()?,
+        );
+
+        dbg!(&self.variables);
+
+        self.expect_type(&return_type, return_value)?;
+
+        // Typecheck the function's body
+        list.iter()
+            .skip(4)
+            .map(|value| self.typecheck(value))
+            .collect::<Result>()?;
+
+        self.variables.pop_front();
 
         Ok(())
     }
 
-    fn typecheck(&mut self, value: &mut Value<'a>) -> Result {
+    fn typecheck(&mut self, value: &Value<'a>) -> Result {
         let span = value.span;
 
         match value.data {
@@ -249,18 +261,18 @@ impl<'a> Typechecker<'a> {
 
             ValueData::Function(_) => unreachable!(),
 
-            ValueData::List(ref mut list) => {
-                let head = list.get_mut(0).ok_or_else(|| {
+            ValueData::List(ref list) => {
+                let head = list.get(0).ok_or_else(|| {
                     Diagnostic::new(("error", Red), span).level_message("Empty list not supported")
                 })?;
 
                 match head.data {
                     ValueData::Identifier("function") => self.typecheck_function_definition(value),
 
-                    ValueData::Identifier("begin") => variant_ref_mut!(value => List)?
-                        .into_iter()
+                    ValueData::Identifier("begin") => variant_ref!(value => List)?
+                        .iter()
                         .skip(1)
-                        .map(|value: &mut Value| self.typecheck(value))
+                        .map(|value| self.typecheck(value))
                         .collect::<Result>(),
 
                     _ => self.typecheck_function_call(value).map(|_| ()),
@@ -269,7 +281,7 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn apply_types(&mut self, value: &mut Value<'a>) -> Result {
+    fn apply_types(&self, value: &mut Value<'a>) -> Result {
         value.ty = self.get_type(&*value).to_owned();
 
         if let ValueData::List(ref mut vs) = value.data {
