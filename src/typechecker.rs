@@ -11,26 +11,8 @@ use crate::{
 use colorful::Color::Red;
 
 #[derive(Debug)]
-#[must_use]
-enum Variable<'a> {
-    ValueRef(&'a Value<'a>),
-
-    // We utilize this enum variant for things such as functions, whose associated data depends on
-    // compilation.
-    Type(ValueType),
-}
-
-impl<'a> Variable<'a> {
-    fn ty(&self) -> &ValueType {
-        match self {
-            Variable::ValueRef(Value { ty, .. }) | Variable::Type(ty) => ty,
-        }
-    }
-}
-
-#[derive(Debug)]
 struct Typechecker<'a> {
-    variables: VecDeque<HashMap<&'a str, Variable<'a>>>,
+    variables: VecDeque<HashMap<&'a str, ValueType>>,
     types: RefCell<HashMap<(usize, usize), ValueType>>,
 }
 
@@ -61,7 +43,7 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn get_variable(&self, value: &Value<'a>) -> Result<&Variable<'a>> {
+    fn get_variable(&self, value: &Value<'a>) -> Result<&ValueType> {
         let ident = variant_ref!(value => Identifier)?;
 
         self.variables
@@ -83,18 +65,11 @@ impl<'a> Typechecker<'a> {
 
     fn expect_type(&self, expected_ty: &ValueType, value: &Value<'a>) -> Result {
         match value.data {
-            ValueData::Identifier(_) => match self.get_variable(value)? {
-                Variable::ValueRef(value) => {
-                    self.expect_type(expected_ty, value)?;
+            ValueData::Identifier(_) => {
+                if *self.get_variable(value)? == *expected_ty {
                     return Ok(());
                 }
-
-                Variable::Type(ref ty) => {
-                    if *ty == *expected_ty {
-                        return Ok(());
-                    }
-                }
-            },
+            }
 
             ValueData::List(_) => {
                 let return_type = self.typecheck_function_call(value)?;
@@ -155,7 +130,7 @@ impl<'a> Typechecker<'a> {
                     data: ValueData::Identifier(_),
                     ..
                 },
-            ) => self.get_variable(value)?.ty(),
+            ) => self.get_variable(value)?,
 
             // TODO: Support inline functions
             Some(value) => {
@@ -215,14 +190,14 @@ impl<'a> Typechecker<'a> {
         // depending on its compilation
         self.variables.back_mut().unwrap().insert(
             name,
-            Variable::Type(ValueType::Function {
+            ValueType::Function {
                 parameter_types: parameters
                     .iter()
                     .map(|parameter| parse_typename(&variant_ref!(parameter => List)?[0]))
                     .collect::<Result<Vec<_>>>()?,
 
                 return_type: Box::new(return_type.clone()),
-            }),
+            },
         );
 
         self.variables.push_front(
@@ -233,7 +208,7 @@ impl<'a> Typechecker<'a> {
                     let parameter_ty = parse_typename(&parameter[0])?;
                     let parameter_name = variant!(&parameter[1] => Identifier)?;
 
-                    Ok((parameter_name, Variable::Type(parameter_ty)))
+                    Ok((parameter_name, parameter_ty))
                 })
                 .collect::<Result<_>>()?,
         );
