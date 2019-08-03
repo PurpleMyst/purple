@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{hash_map::HashMap, vec_deque::VecDeque};
 
 use crate::{
@@ -12,7 +12,7 @@ use colorful::Color::Red;
 
 #[derive(Debug)]
 struct Typechecker<'a> {
-    variables: VecDeque<HashMap<&'a str, ValueType>>,
+    variables: RefCell<VecDeque<HashMap<&'a str, ValueType>>>,
     types: RefCell<HashMap<(usize, usize), ValueType>>,
 }
 
@@ -38,22 +38,31 @@ pub(crate) fn parse_typename<'a>(value: &Value<'a>) -> Result<ValueType> {
 impl<'a> Typechecker<'a> {
     fn new() -> Self {
         Self {
-            variables: VecDeque::from(vec![HashMap::new()]),
+            variables: RefCell::new(VecDeque::from(vec![HashMap::new()])),
             types: RefCell::new(HashMap::new()),
         }
     }
 
-    fn get_variable(&self, value: &Value<'a>) -> Result<&ValueType> {
-        let ident = variant_ref!(value => Identifier)?;
+    fn get_variable(&self, value: &Value<'a>) -> Result<Ref<ValueType>> {
+        let ident = variant!(value => Identifier)?;
 
-        self.variables
+        let variables = self.variables.borrow();
+
+        // Due to not being able to return a `Result` from `Ref::map`, we must be sure that the
+        // value returned in `Ref::map` is an `Ok`. We check before-hand with a separate loop to
+        // return a pretty error instead of just panicking.
+        variables
             .iter()
-            .find_map(|level| level.get(ident))
+            .find(|level| level.contains_key(ident))
             .ok_or_else(|| {
                 Diagnostic::new(("error", Red), value.span)
                     .level_message(format!("Undefined variable {:?}", ident))
                     .note("This error happened while type-checking")
-            })
+            })?;
+
+        Ok(Ref::map(variables, |variables| {
+            variables.iter().find_map(|level| level.get(ident)).unwrap()
+        }))
     }
 
     /// Return a mutable reference to a value's type through a shared reference.
@@ -73,7 +82,7 @@ impl<'a> Typechecker<'a> {
 
             ValueData::List(_) => {
                 let return_type = self.typecheck_function_call(value)?;
-                if return_type == expected_ty {
+                if return_type == *expected_ty {
                     return Ok(());
                 } else {
                     return Err(Diagnostic::new(("error", Red), value.span).level_message(
@@ -120,7 +129,7 @@ impl<'a> Typechecker<'a> {
 
     // TODO: factor this out cause the compiler wants it as well
     /// Typecheck a non-builtin function call's parameters and return its return type
-    fn typecheck_function_call(&self, value: &Value<'a>) -> Result<&ValueType> {
+    fn typecheck_function_call(&self, value: &Value<'a>) -> Result<ValueType> {
         let span = value.span;
         let mut list = variant_ref!(value => List)?.iter();
 
@@ -147,22 +156,23 @@ impl<'a> Typechecker<'a> {
         };
 
         if let ValueType::Function {
-            parameter_types,
-            return_type,
-        } = ty
+            ref parameter_types,
+            ref return_type,
+        } = *ty
         {
             list.zip(parameter_types)
                 .map(|(param, ty)| self.expect_type(ty, param))
                 .collect::<Result>()?;
 
-            Ok(return_type)
+            // XXX: Can we avoid the clone here?
+            Ok(*return_type.clone())
         } else {
             Err(Diagnostic::new(("error", Red), span)
                 .level_message(format!("Expected a function, got {:?}", ty)))
         }
     }
 
-    fn typecheck_function_definition(&mut self, value: &Value<'a>) -> Result {
+    fn typecheck_function_definition(&self, value: &Value<'a>) -> Result {
         let list = variant_ref!(&value => List)?;
 
         if list.len() <= 4 {
@@ -188,7 +198,7 @@ impl<'a> Typechecker<'a> {
 
         // Add the function to the global context, with just its type due to the value's data
         // depending on its compilation
-        self.variables.back_mut().unwrap().insert(
+        self.variables.borrow_mut().back_mut().unwrap().insert(
             name,
             ValueType::Function {
                 parameter_types: parameters
@@ -200,7 +210,7 @@ impl<'a> Typechecker<'a> {
             },
         );
 
-        self.variables.push_front(
+        self.variables.borrow_mut().push_front(
             parameters
                 .iter()
                 .map(|parameter| {
@@ -223,12 +233,12 @@ impl<'a> Typechecker<'a> {
             .map(|value| self.typecheck(value))
             .collect::<Result>()?;
 
-        self.variables.pop_front();
+        self.variables.borrow_mut().pop_front();
 
         Ok(())
     }
 
-    fn typecheck(&mut self, value: &Value<'a>) -> Result {
+    fn typecheck(&self, value: &Value<'a>) -> Result {
         let span = value.span;
 
         match value.data {
