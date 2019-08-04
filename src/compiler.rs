@@ -189,7 +189,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_list(&mut self, value: Value<'a>) -> Result<BasicValueEnum> {
         let span = value.span;
-        let list = variant!(value => List)?;
+        let mut list = variant!(value => List)?;
 
         Ok(match &list[0].data {
             ValueData::Identifier("function") => self
@@ -197,6 +197,8 @@ impl<'a> Compiler<'a> {
                 .as_global_value()
                 .as_pointer_value()
                 .as_basic_value_enum(),
+
+            ValueData::Identifier("identity") => self.compile(list.swap_remove(1))?,
 
             ValueData::Identifier("begin") => list
                 .into_iter()
@@ -239,10 +241,6 @@ impl<'a> Compiler<'a> {
             }
 
             Value {
-                data: ValueData::Function(_),
-                ..
-            }
-            | Value {
                 ty: ValueType::Function { .. },
                 ..
             } => unreachable!(),

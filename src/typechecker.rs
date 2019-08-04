@@ -10,14 +10,21 @@ use crate::{
 
 use colorful::Color::Red;
 
+// The Typechecker uses Clone pretty liberally but it's probably
+// fine because most of the `ValueType` variants are `Copy`
+
 #[derive(Debug)]
 struct Typechecker<'a> {
+    /// Maps variable names to their type
     variables: RefCell<VecDeque<HashMap<&'a str, ValueType>>>,
+
+    /// Map value spans to their inferred type
     types: RefCell<HashMap<(usize, usize), ValueType>>,
 }
 
 type Result<T = (), E = Diagnostic> = std::result::Result<T, E>;
 
+/// Parse an identifier into a type
 pub(crate) fn parse_typename<'a>(value: &Value<'a>) -> Result<ValueType> {
     match &value.data {
         ValueData::Identifier("i32") => Ok(ValueType::Integer {
@@ -67,10 +74,10 @@ impl<'a> Typechecker<'a> {
         }))
     }
 
-    /// Return a mutable reference to a value's type through a shared reference.
-    fn get_type(&self, value: &Value) -> RefMut<ValueType> {
-        RefMut::map(self.types.borrow_mut(), |h| {
-            h.entry(value.span).or_insert_with(|| value.ty.clone())
+    /// Return a mutable reference to a value's inferred type through a shared reference.
+    fn get_type_mut(&self, value: &Value) -> RefMut<ValueType> {
+        RefMut::map(self.types.borrow_mut(), |types| {
+            types.entry(value.span).or_insert_with(|| value.ty.clone())
         })
     }
 
@@ -97,7 +104,7 @@ impl<'a> Typechecker<'a> {
             }
 
             ValueData::Integer(_) => {
-                let mut ty = self.get_type(value);
+                let mut ty = self.get_type_mut(value);
 
                 if let ValueType::Integer {
                     size: None,
@@ -113,8 +120,8 @@ impl<'a> Typechecker<'a> {
                 }
             }
 
-            ValueData::String(_) | ValueData::Function(_) => {
-                if *self.get_type(value) == *expected_ty {
+            ValueData::String(_) => {
+                if *self.get_type_mut(value) == *expected_ty {
                     return Ok(());
                 }
             }
@@ -124,57 +131,95 @@ impl<'a> Typechecker<'a> {
             Diagnostic::new(("error", Red), value.span).level_message(format!(
                 "Expected type {:?}, found {:?}",
                 expected_ty,
-                self.get_type(value),
+                self.get_type_mut(value),
             )),
         )
     }
 
-    // TODO: factor this out cause the compiler wants it as well
     /// Typecheck a non-builtin function call's parameters and return its return type
     fn typecheck_function_call(&self, value: &Value<'a>) -> Result<ValueType> {
         let span = value.span;
         let mut list = variant_ref!(value => List)?.iter();
 
-        let ty = match list.next() {
+        let head = list.next();
+
+        let mut doit = |ty: &ValueType| {
+            if let ValueType::Function {
+                ref parameter_types,
+                ref return_type,
+            } = ty
+            {
+                list.by_ref()
+                    .zip(parameter_types)
+                    .map(|(param, ty)| self.expect_type(ty, param))
+                    .collect::<Result>()?;
+
+                Ok(*return_type.clone())
+            } else {
+                Err(Diagnostic::new(("error", Red), span)
+                    .level_message(format!("Expected a function, got {:?}", ty)))
+            }
+        };
+
+        match head {
+            Some(Value {
+                data: ValueData::Identifier("function"),
+                ..
+            }) => self.typecheck_function_definition(value),
+
+            Some(Value {
+                data: ValueData::Identifier("begin"),
+                ..
+            }) => list
+                .map(|value| self.typecheck(value))
+                .collect::<Result<Vec<ValueType>>>()?
+                .pop()
+                .ok_or_else(|| Diagnostic::new(("error", Red), span).level_message("Empty begin")),
+
+            Some(Value {
+                data: ValueData::Identifier("identity"),
+                ..
+            }) => {
+                let diagnostic = || {
+                    Diagnostic::new(("error", Red), span)
+                        .level_message("identity requires one and only one argument")
+                };
+
+                let return_value = list.next().ok_or_else(diagnostic)?;
+
+                if list.next().is_some() {
+                    return Err(diagnostic());
+                }
+
+                self.typecheck(return_value)
+            }
+
             Some(
                 value @ Value {
                     data: ValueData::Identifier(_),
                     ..
                 },
-            ) => self.get_variable(value)?,
+            ) => doit(&*self.get_variable(value)?),
 
-            // TODO: Support inline functions
-            Some(value) => {
-                return Err(Diagnostic::new(("error", Red), span).level_message(format!(
-                    "Expected a callable, found value of type {:?}",
-                    self.get_type(value)
-                )))
-            }
+            Some(
+                value @ Value {
+                    data: ValueData::List(_),
+                    ..
+                },
+            ) => doit(&self.typecheck_function_call(value)?),
 
-            None => {
-                return Err(Diagnostic::new(("error", Red), span)
-                    .level_message("Expected a function call, found the empty list"))
-            }
-        };
+            Some(value) => Err(Diagnostic::new(("error", Red), span).level_message(format!(
+                "Expected a callable, found value of type {:?}",
+                self.get_type_mut(value)
+            ))),
 
-        if let ValueType::Function {
-            ref parameter_types,
-            ref return_type,
-        } = *ty
-        {
-            list.zip(parameter_types)
-                .map(|(param, ty)| self.expect_type(ty, param))
-                .collect::<Result>()?;
-
-            // XXX: Can we avoid the clone here?
-            Ok(*return_type.clone())
-        } else {
-            Err(Diagnostic::new(("error", Red), span)
-                .level_message(format!("Expected a function, got {:?}", ty)))
+            None => Err(Diagnostic::new(("error", Red), span)
+                .level_message("Expected a function call, found the empty list")),
         }
     }
 
-    fn typecheck_function_definition(&self, value: &Value<'a>) -> Result {
+    /// Typecheck a function definition and return the resulting function's type
+    fn typecheck_function_definition(&self, value: &Value<'a>) -> Result<ValueType> {
         let list = variant_ref!(&value => List)?;
 
         if list.len() <= 4 {
@@ -198,19 +243,22 @@ impl<'a> Typechecker<'a> {
         //                                           ^^^^^^^^^^^^
         let return_value = list.last().unwrap();
 
+        let function_valuetype = ValueType::Function {
+            parameter_types: parameters
+                .iter()
+                .map(|parameter| parse_typename(&variant_ref!(parameter => List)?[0]))
+                .collect::<Result<Vec<_>>>()?,
+
+            return_type: Box::new(return_type.clone()),
+        };
+
         // Add the function to the global context, with just its type due to the value's data
         // depending on its compilation
-        self.variables.borrow_mut().back_mut().unwrap().insert(
-            name,
-            ValueType::Function {
-                parameter_types: parameters
-                    .iter()
-                    .map(|parameter| parse_typename(&variant_ref!(parameter => List)?[0]))
-                    .collect::<Result<Vec<_>>>()?,
-
-                return_type: Box::new(return_type.clone()),
-            },
-        );
+        self.variables
+            .borrow_mut()
+            .back_mut()
+            .unwrap()
+            .insert(name, function_valuetype.clone());
 
         self.variables.borrow_mut().push_front(
             parameters
@@ -232,44 +280,28 @@ impl<'a> Typechecker<'a> {
         // Typecheck the function's body
         list.iter()
             .skip(4)
-            .map(|value| self.typecheck(value))
+            .map(|value| self.typecheck(value).map(|_| ()))
             .collect::<Result>()?;
 
         self.variables.borrow_mut().pop_front();
 
-        Ok(())
+        Ok(function_valuetype)
     }
 
-    fn typecheck(&self, value: &Value<'a>) -> Result {
-        let span = value.span;
-
+    fn typecheck(&self, value: &Value<'a>) -> Result<ValueType> {
         match value.data {
-            ValueData::Integer(..) | ValueData::Identifier(..) | ValueData::String(..) => Ok(()),
+            ValueData::Identifier(..) => self.get_variable(value).map(|ty| ty.to_owned()),
 
-            ValueData::Function(_) => unreachable!(),
-
-            ValueData::List(ref list) => {
-                let head = list.get(0).ok_or_else(|| {
-                    Diagnostic::new(("error", Red), span).level_message("Empty list not supported")
-                })?;
-
-                match head.data {
-                    ValueData::Identifier("function") => self.typecheck_function_definition(value),
-
-                    ValueData::Identifier("begin") => variant_ref!(value => List)?
-                        .iter()
-                        .skip(1)
-                        .map(|value| self.typecheck(value))
-                        .collect::<Result>(),
-
-                    _ => self.typecheck_function_call(value).map(|_| ()),
-                }
+            ValueData::Integer(..) | ValueData::String(..) => {
+                Ok(self.get_type_mut(value).to_owned())
             }
+
+            ValueData::List(_) => self.typecheck_function_call(value),
         }
     }
 
     fn apply_types(&self, value: &mut Value<'a>) -> Result {
-        value.ty = self.get_type(&*value).to_owned();
+        value.ty = self.get_type_mut(&*value).to_owned();
 
         if let ValueData::List(ref mut vs) = value.data {
             vs.iter_mut()

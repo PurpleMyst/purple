@@ -7,8 +7,6 @@ pub enum ValueData<'a> {
     String(String),
 
     List(Vec<Value<'a>>),
-
-    Function(inkwell::values::PointerValue),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

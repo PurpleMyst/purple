@@ -4,6 +4,6 @@
     )
 
     (function main() i32
-        (id 42)
+        ((identity id) 42)
     )
 )
