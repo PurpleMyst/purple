@@ -49,11 +49,13 @@ impl<'a> Typechecker<'a> {
         let variables = self.variables.borrow();
 
         // Due to not being able to return a `Result` from `Ref::map`, we must be sure that the
-        // value returned in `Ref::map` is an `Ok`. We check before-hand with a separate loop to
-        // return a pretty error instead of just panicking.
-        variables
+        // value returned in `Ref::map` is an `Ok`.
+        // We check before-hand with a separate loop to return a pretty error instead of just panicking.
+        // We also store the index of the level which contained the variable so we don't have to
+        // search through everything again
+        let idx = variables
             .iter()
-            .find(|level| level.contains_key(ident))
+            .position(|level| level.contains_key(ident))
             .ok_or_else(|| {
                 Diagnostic::new(("error", Red), value.span)
                     .level_message(format!("Undefined variable {:?}", ident))
@@ -61,7 +63,7 @@ impl<'a> Typechecker<'a> {
             })?;
 
         Ok(Ref::map(variables, |variables| {
-            variables.iter().find_map(|level| level.get(ident)).unwrap()
+            variables[idx].get(ident).unwrap()
         }))
     }
 
