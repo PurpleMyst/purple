@@ -282,7 +282,7 @@ impl<'a> Typechecker<'a> {
 }
 
 pub fn typecheck<'a>(value: &mut Value<'a>) -> Result {
-    let mut typechecker = Typechecker::new();
+    let typechecker = Typechecker::new();
     typechecker.typecheck(value)?;
     typechecker.apply_types(value)?;
     Ok(())
